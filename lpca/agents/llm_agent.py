@@ -45,20 +45,18 @@ class LLMAgent(BaseAgent):
 
     def _get_default_system_prompt(self) -> str:
         """Get default system prompt for the agent."""
-        return f"""You are Agent {self.agent_id} in a collaborative multi-agent task.
+        return f"""You are Agent {self.agent_id}. You have PARTIAL information. Your partner has the REST.
 
-Your role is to work with your partner agent to solve problems that neither of you
-can solve alone. Each of you has partial information.
+IMPORTANT: You CANNOT solve this alone. You MUST share info first.
 
-Guidelines:
-- Share relevant information with your partner
-- Be concise but complete in your communications
-- When you have enough information, provide the final answer
-- Format your final answer clearly with "FINAL ANSWER:" prefix
+Response format:
+- First turn: MESSAGE: <share your constraints>
+- After receiving partner's info: ANSWER: <json solution>
 
-Communication format:
-- Use "MESSAGE TO PARTNER:" to send information
-- Use "FINAL ANSWER:" when ready to submit the solution"""
+Example MESSAGE: My constraints are x1+x2>=1 and x3=0.
+Example ANSWER: {{"x1":1,"x2":0,"x3":0}}
+
+ALWAYS share your constraints before answering."""
 
     def format_prompt(
         self,
@@ -195,7 +193,8 @@ Communication format:
     def _extract_message(self, text: str) -> Optional[str]:
         """Extract message to partner from response."""
         patterns = [
-            r"MESSAGE TO PARTNER:\s*(.+?)(?=FINAL ANSWER:|$)",
+            r"MESSAGE:\s*(.+?)(?=ANSWER:|$)",
+            r"MESSAGE TO PARTNER:\s*(.+?)(?=FINAL ANSWER:|ANSWER:|$)",
             r"Message:\s*(.+?)(?=Answer:|$)",
             r"\[To partner\]:\s*(.+?)(?=\[|$)",
         ]
@@ -205,26 +204,41 @@ Communication format:
             if match:
                 return match.group(1).strip()
 
-        # If no explicit message marker, return the whole response as message
-        # (unless it contains a final answer)
-        if "FINAL ANSWER" not in text.upper():
-            return text.strip()
+        # If no explicit message marker and no answer, return the response as message
+        if "ANSWER:" not in text.upper() and "FINAL ANSWER" not in text.upper():
+            # Clean up the text - remove any partial tags
+            cleaned = text.strip()
+            if cleaned:
+                return cleaned
 
         return None
 
     def _extract_final_answer(self, text: str) -> Optional[str]:
-        """Extract final answer from response."""
-        patterns = [
-            r"FINAL ANSWER:\s*(.+?)$",
-            r"Answer:\s*(.+?)$",
-            r"Solution:\s*(.+?)$",
-            r"\{[^}]+\}",  # JSON-like answer
-        ]
+        """Extract final answer from response.
 
-        for pattern in patterns:
-            match = re.search(pattern, text, re.DOTALL | re.IGNORECASE)
-            if match:
-                return match.group(1).strip() if match.lastindex else match.group(0).strip()
+        Only extracts answer if explicitly marked with ANSWER: prefix.
+        Does NOT extract JSON from examples or explanations.
+        """
+        # Must have explicit ANSWER: prefix (not in examples)
+        # Look for ANSWER: at start of line or after newline
+        answer_match = re.search(r"(?:^|\n)\s*ANSWER:\s*(\{[^}]+\})", text, re.IGNORECASE)
+        if answer_match:
+            return answer_match.group(1).strip()
+
+        # Also try FINAL ANSWER:
+        final_match = re.search(r"(?:^|\n)\s*FINAL ANSWER:\s*(\{[^}]+\})", text, re.IGNORECASE)
+        if final_match:
+            return final_match.group(1).strip()
+
+        # Check for ANSWER: with non-JSON content
+        simple_match = re.search(r"(?:^|\n)\s*ANSWER:\s*([^\n]+)", text, re.IGNORECASE)
+        if simple_match:
+            answer = simple_match.group(1).strip()
+            # Don't return if it's just explaining the format
+            if "example" not in answer.lower() and "{" in answer:
+                json_match = re.search(r"(\{[^}]+\})", answer)
+                if json_match:
+                    return json_match.group(1)
 
         return None
 
@@ -344,12 +358,17 @@ class DualAgentRunner:
 
 def load_llm_agent(
     agent_id: str,
-    model_name: str = "meta-llama/Llama-3.2-1B-Instruct",
+    model_name: str = "TinyLlama/TinyLlama-1.1B-Chat-v1.0",
     device: str = "auto",
     **kwargs
 ) -> Tuple[LLMAgent, ModelWrapper, Any]:
     """
     Load an LLM agent with model.
+
+    Args:
+        agent_id: Unique identifier for the agent
+        model_name: HuggingFace model name (default: TinyLlama, open model)
+        device: Device to use ('auto', 'mps', 'cuda', 'cpu')
 
     Returns:
         Tuple of (agent, model_wrapper, tokenizer)
@@ -357,20 +376,29 @@ def load_llm_agent(
     from transformers import AutoModelForCausalLM, AutoTokenizer
     import torch
 
-    # Determine dtype
-    dtype = torch.float16
-    if device == "mps" or (device == "auto" and torch.backends.mps.is_available()):
-        dtype = torch.float32  # MPS works better with float32 for some ops
+    # Determine actual device
+    if device == "auto":
+        if torch.cuda.is_available():
+            actual_device = "cuda"
+        elif torch.backends.mps.is_available():
+            actual_device = "mps"
+        else:
+            actual_device = "cpu"
+    else:
+        actual_device = device
+
+    # Determine dtype - MPS works better with float32
+    dtype = torch.float32 if actual_device == "mps" else torch.float16
 
     # Load model
     model = AutoModelForCausalLM.from_pretrained(
         model_name,
         torch_dtype=dtype,
-        device_map=device if device != "mps" else None,
+        device_map=None if actual_device == "mps" else "auto",
         trust_remote_code=True,
     )
 
-    if device == "mps":
+    if actual_device == "mps":
         model = model.to("mps")
 
     # Load tokenizer
@@ -379,7 +407,7 @@ def load_llm_agent(
         tokenizer.pad_token = tokenizer.eos_token
 
     # Create wrapper and agent
-    wrapper = ModelWrapper(model, tokenizer, device)
+    wrapper = ModelWrapper(model, tokenizer, actual_device)
     agent = LLMAgent(agent_id, wrapper, tokenizer, **kwargs)
 
     return agent, wrapper, tokenizer
