@@ -1,0 +1,71 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# Virtual environments
+venv/
+ENV/
+env/
+.venv/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# Jupyter
+.ipynb_checkpoints/
+*.ipynb_checkpoints
+
+# Testing
+.pytest_cache/
+.coverage
+htmlcov/
+.tox/
+.nox/
+
+# Experiment outputs
+outputs/
+logs/
+checkpoints/
+wandb/
+
+# Model weights (don't commit large files)
+*.pt
+*.pth
+*.bin
+*.safetensors
+*.gguf
+
+# Data files
+*.parquet
+*.jsonl
+*.npy
+*.npz
+data/
+
+# Secrets
+.env
+*.key
+credentials.json
