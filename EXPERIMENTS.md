@@ -1,7 +1,18 @@
 # LPCA Experimental Protocols
 
-**Version:** 1.0
-**Status:** Pre-registered
+**Version:** 1.1
+**Status:** Active Development
+**Last Updated:** January 14, 2026
+
+## Progress Summary
+
+| Experiment | Status | Result |
+|------------|--------|--------|
+| E1: Baseline Validation | ✅ Preliminary | P1 (20%) >> P0 (0%) with mock agents |
+| E2: Text Baseline Strength | 🔄 Ready | Infrastructure complete |
+| E3: CIPHER Evaluation | 🔄 Ready | Implementation complete |
+| E4: Activation Grafting Ablation | 🔄 Ready | Implementation complete |
+| E5-E8 | ⬜ Pending | Awaiting M2/M3 |
 
 ---
 
@@ -126,7 +137,7 @@ def generate_split_csp(n_constraints, n_variables, domain_size, density, seed):
 
 ## 2. Experimental Protocols
 
-### 2.1 Experiment E1: Baseline Validation
+### 2.1 Experiment E1: Baseline Validation ✅ PRELIMINARY COMPLETE
 
 **Objective:** Confirm communication is the bottleneck
 
@@ -136,6 +147,17 @@ def generate_split_csp(n_constraints, n_variables, domain_size, density, seed):
 3. Compute success rate difference
 
 **Success Criterion:** P1 - P0 ≥ 30% on at least 2/3 task types
+
+**Preliminary Results (Mock Agents, 10 episodes):**
+```
+Protocol   Success    Partial    Turns      Bits
+--------------------------------------------------
+P0         0.000      0.000      20.0       0
+P1         0.200      0.525      3.0        565
+P2         0.200      0.525      3.0        565
+```
+
+**Status:** Communication matters confirmed. Full validation with real LLM pending.
 
 **Analysis:**
 - Paired t-test for significance

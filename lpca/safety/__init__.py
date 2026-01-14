@@ -1,8 +1,24 @@
-"""Safety evaluation modules for LPCA."""
+"""Safety evaluation modules for LPCA experiments.
 
-# Placeholder for safety modules
-# Will include:
-# - monitors.py: Linear probe and behavioral monitors
-# - compliance.py: Compliance gap evaluation
-# - covert_probe.py: Covert channel capacity probes
-# - bloom_eval.py: Bloom behavioral evaluation integration
+Implements safety instrumentation from SAFETY_PROTOCOL.md:
+- Compliance gap testing
+- Monitor disagreement tracking
+- Covert channel probes
+- Behavioral drift detection
+"""
+
+from lpca.safety.compliance import (
+    ComplianceGapTester,
+    ComplianceResult,
+)
+from lpca.safety.monitors import (
+    LinearProbeMonitor,
+    MonitorEnsemble,
+)
+
+__all__ = [
+    "ComplianceGapTester",
+    "ComplianceResult",
+    "LinearProbeMonitor",
+    "MonitorEnsemble",
+]

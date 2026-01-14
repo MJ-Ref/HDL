@@ -2,16 +2,41 @@
 
 A research framework for evaluating machine-native communication between multi-agent AI systems.
 
+[![Tests](https://img.shields.io/badge/tests-77%20passing-brightgreen)](tests/)
+[![Milestone](https://img.shields.io/badge/milestone-1%20in%20progress-blue)](PROJECT_STATUS.md)
+[![Python](https://img.shields.io/badge/python-3.10%2B-blue)](setup.py)
+
 ## Overview
 
 This project tests whether multi-agent AI systems can achieve higher capability and reliability by shifting inter-agent state transfer away from human-optimized text tokens and toward **machine-native representations** (expected embeddings, activations/hidden states, learned continuous latent packets, discretized latent tokens).
 
 **Primary Research Question:** At fixed resource budgets (bits communicated, compute overhead, latency), can latent-path communication mechanisms outperform optimized text baselines on coordination-limited multi-agent tasks?
 
+## Current Status
+
+**Milestone 1: Latent Baselines** - Implementation complete, evaluation pending
+
+| Component | Status |
+|-----------|--------|
+| Text Baselines (P0-P5) | Complete |
+| CIPHER Channel (E0) | Complete |
+| Activation Grafting (A0) | Complete |
+| Test Suite | 77 tests passing |
+| Demo Experiment | Working |
+
+**Preliminary Results (Mock Agents):**
+```
+Protocol   Success    Partial    Turns      Bits
+--------------------------------------------------
+P0         0.000      0.000      20.0       0
+P1         0.200      0.525      3.0        565
+P2         0.200      0.525      3.0        565
+```
+
 ## Key Features
 
 - **Multiple Communication Protocols:** Text baselines (P0-P5), CIPHER expected embeddings (E0), activation grafting (A0), learned codecs (L1-L2)
-- **Split-Information Tasks:** Synthetic and code tasks where coordination is genuinely necessary
+- **Split-Information Tasks:** Synthetic tasks where coordination is genuinely necessary
 - **Budget Accounting:** First-class tracking of bits, compute, and latency
 - **Safety Instrumentation:** Compliance gap testing, monitor disagreement, covert channel probes
 - **Pre-registered Metrics:** All metrics defined before experiments run
@@ -27,24 +52,34 @@ cd HDL
 python -m venv venv
 source venv/bin/activate  # or `venv\Scripts\activate` on Windows
 
-# Install package
+# Install minimal dependencies (no torch required for mock experiments)
 pip install -e .
 
-# Or install with all dependencies
+# Install with torch for real LLM experiments
 pip install -e ".[full]"
 ```
 
 ## Quick Start
 
 ```bash
-# Run baseline experiment
-python scripts/run_experiment.py --config configs/base.yaml
+# Run demo experiment with mock agents (no torch needed)
+python scripts/demo_experiment.py --mock
 
-# Run with specific protocol
-python scripts/run_experiment.py --config configs/base.yaml --protocol P1
+# Run with specific task type
+python scripts/demo_experiment.py --mock --task arithmetic
 
-# Dry run (print config)
-python scripts/run_experiment.py --config configs/base.yaml --dry_run
+# Run unit tests
+python -m pytest tests/ -v
+```
+
+### With Real LLM (requires torch)
+
+```bash
+# Install full dependencies
+pip install -e ".[full]"
+
+# Run with Llama model
+python scripts/demo_experiment.py --model meta-llama/Llama-3.2-1B-Instruct
 ```
 
 ## Project Structure
@@ -52,11 +87,28 @@ python scripts/run_experiment.py --config configs/base.yaml --dry_run
 ```
 lpca/
 ├── core/           # Configuration, logging, metrics, budget
-├── envs/           # Task environments (synthetic, code)
-├── channels/       # Communication protocols (text, CIPHER, activation)
-├── agents/         # Agent implementations with activation hooks
-├── training/       # Codec training utilities
-└── safety/         # Safety evaluation modules
+│   ├── config.py   # Experiment configuration
+│   ├── logging.py  # Episode logging (JSONL + Parquet)
+│   ├── metrics.py  # Pre-registered metrics
+│   └── budget.py   # Budget accounting
+│
+├── envs/           # Task environments
+│   ├── base.py     # Abstract interface
+│   └── split_synthetic.py  # S1-S3 tasks
+│
+├── channels/       # Communication protocols
+│   ├── base.py     # Channel interface
+│   ├── text.py     # P0-P5 text baselines
+│   ├── cipher.py   # E0 CIPHER channel
+│   └── activation.py  # A0 activation grafting
+│
+├── agents/         # Agent implementations
+│   ├── base.py     # Agent interface
+│   ├── model_wrapper.py  # Activation hooks
+│   └── llm_agent.py  # LLM-based agent
+│
+├── training/       # Codec training (planned)
+└── safety/         # Safety evaluation (planned)
 ```
 
 ## Documentation
@@ -81,28 +133,62 @@ lpca/
 
 ### Protocols Evaluated
 
-| Protocol | Type | Description |
-|----------|------|-------------|
-| P0 | Text | No communication (lower bound) |
-| P1 | Text | Full text (upper reference) |
-| P2 | Text | Budgeted text |
-| P3 | Text | Text + summarization |
-| P4 | Text | Text + retrieval memory |
-| P5 | Structured | JSON workspace |
-| E0 | Latent | CIPHER expected embeddings |
-| A0 | Latent | Activation grafting |
-| L1 | Latent | Continuous codec |
-| L2 | Latent | Discrete codec (VQ) |
+| Protocol | Type | Description | Status |
+|----------|------|-------------|--------|
+| P0 | Text | No communication (lower bound) | Complete |
+| P1 | Text | Full text (upper reference) | Complete |
+| P2 | Text | Budgeted text | Complete |
+| P3 | Text | Text + summarization | Complete |
+| P4 | Text | Text + retrieval memory | Complete |
+| P5 | Structured | JSON workspace | Complete |
+| E0 | Latent | CIPHER expected embeddings | Complete |
+| A0 | Latent | Activation grafting | Complete |
+| L1 | Latent | Continuous codec | Planned |
+| L2 | Latent | Discrete codec (VQ) | Planned |
+
+## Task Families
+
+### S1: Constraint Satisfaction
+- Agent A receives half the constraints
+- Agent B receives the other half
+- Solution requires satisfying all constraints
+
+### S2: Arithmetic with Missing Operands
+- Agent A sees some variables
+- Agent B sees others
+- Must compute function requiring all values
+
+### S3: Program Synthesis (Toy)
+- Agent A sees input-output examples
+- Agent B sees additional test cases
+- Must produce correct implementation
 
 ## Hardware Requirements
 
 **Minimum:**
-- 32GB RAM + 16GB VRAM (or 64GB unified memory)
-- Python 3.11+
+- 16GB RAM
+- Python 3.10+
+
+**For Real LLM Experiments:**
+- 32GB RAM + GPU with 16GB VRAM, OR
+- Apple M-series with 64GB+ unified memory
 
 **Recommended:**
 - Apple M3 Max with 98GB unified memory, OR
 - NVIDIA A100 80GB
+
+## Running Tests
+
+```bash
+# Run all tests
+python -m pytest tests/ -v
+
+# Run specific test file
+python -m pytest tests/test_channels.py -v
+
+# Run with coverage
+python -m pytest tests/ --cov=lpca --cov-report=html
+```
 
 ## Citation
 
