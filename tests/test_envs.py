@@ -124,10 +124,12 @@ class TestSplitSyntheticEnv:
         """Test environment selection."""
         env = SplitSyntheticEnv()
 
-        task = env.reset("constraint_satisfaction", seed=42)
+        env.select_environment("constraint_satisfaction")
+        task = env.reset(seed=42)
         assert task.task_type == "constraint_satisfaction"
 
-        task = env.reset("arithmetic", seed=42)
+        env.select_environment("arithmetic")
+        task = env.reset(seed=42)
         assert task.task_type == "arithmetic"
 
 

@@ -10,18 +10,6 @@ from lpca.channels.text import (
     StructuredChannel,
     create_channel,
 )
-from lpca.channels.cipher import (
-    CIPHERChannel,
-    MultiTokenCIPHER,
-    create_cipher_channel,
-)
-from lpca.channels.activation import (
-    ActivationGraftingChannel,
-    ActivationGraftingProtocol,
-    create_activation_channel,
-    layer_sweep_configs,
-    combine_fn_sweep_configs,
-)
 
 __all__ = [
     # Base
@@ -35,14 +23,37 @@ __all__ = [
     "RetrievalChannel",
     "StructuredChannel",
     "create_channel",
-    # CIPHER (E0)
-    "CIPHERChannel",
-    "MultiTokenCIPHER",
-    "create_cipher_channel",
-    # Activation grafting (A0)
-    "ActivationGraftingChannel",
-    "ActivationGraftingProtocol",
-    "create_activation_channel",
-    "layer_sweep_configs",
-    "combine_fn_sweep_configs",
 ]
+
+# Lazy imports for torch-dependent channels
+try:
+    from lpca.channels.cipher import (
+        CIPHERChannel,
+        MultiTokenCIPHER,
+        create_cipher_channel,
+    )
+    __all__.extend([
+        "CIPHERChannel",
+        "MultiTokenCIPHER",
+        "create_cipher_channel",
+    ])
+except ImportError:
+    pass  # torch not available
+
+try:
+    from lpca.channels.activation import (
+        ActivationGraftingChannel,
+        ActivationGraftingProtocol,
+        create_activation_channel,
+        layer_sweep_configs,
+        combine_fn_sweep_configs,
+    )
+    __all__.extend([
+        "ActivationGraftingChannel",
+        "ActivationGraftingProtocol",
+        "create_activation_channel",
+        "layer_sweep_configs",
+        "combine_fn_sweep_configs",
+    ])
+except ImportError:
+    pass  # torch not available

@@ -47,18 +47,20 @@ class TurnLog:
 @dataclass
 class EpisodeLog:
     """Complete log for a single episode."""
-    # Identification
+    # Identification (required)
     episode_id: str
     experiment_id: str
     seed: int
 
-    # Task info
+    # Task info (required)
     task_family: str
     task_type: str
-    task_params: Dict[str, Any] = field(default_factory=dict)
 
-    # Protocol
+    # Protocol (required)
     protocol: str
+
+    # Optional fields with defaults
+    task_params: Dict[str, Any] = field(default_factory=dict)
     protocol_params: Dict[str, Any] = field(default_factory=dict)
 
     # Task inputs (for reproducibility)

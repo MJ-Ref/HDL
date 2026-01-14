@@ -12,7 +12,7 @@ from typing import Any, Dict, List, Optional, Tuple, Set
 import random
 import itertools
 
-from lpca.envs.base import BaseEnvironment, TaskInstance, VerifierResult
+from lpca.envs.base import BaseEnvironment, TaskInstance, VerifierResult, CompositeEnvironment
 
 
 class ConstraintSatisfactionTask(BaseEnvironment):
@@ -680,6 +680,13 @@ class SplitSyntheticEnv(CompositeEnvironment):
         """Return available task types."""
         return [env.task_type for env in self.environments]
 
+    def reset(self, seed: int) -> TaskInstance:
+        """
+        Reset current environment with a new task.
 
-# Import for convenience
-from lpca.envs.base import CompositeEnvironment
+        Call select_environment() first to choose task type.
+        """
+        if self.current_env is None:
+            raise RuntimeError("No environment selected. Call select_environment() first.")
+        return self.current_env.reset(seed)
+

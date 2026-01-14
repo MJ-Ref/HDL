@@ -25,11 +25,26 @@ import time
 # Add parent directory to path
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from lpca.core.config import ExperimentConfig
-from lpca.core.logging import EpisodeLogger, EpisodeLog, TurnLog
+# Import only what we need for mock experiments (avoid torch dependencies)
 from lpca.core.metrics import MetricsCalculator
 from lpca.envs.split_synthetic import SplitSyntheticEnv
-from lpca.channels.text import create_channel
+from lpca.channels.text import (
+    NoCommChannel,
+    FullTextChannel,
+    BudgetedTextChannel,
+)
+
+
+def create_channel(protocol: str):
+    """Create channel by protocol identifier (P0-P2 only for mock demo)."""
+    channels = {
+        "P0": NoCommChannel,
+        "P1": FullTextChannel,
+        "P2": BudgetedTextChannel,
+    }
+    if protocol not in channels:
+        raise ValueError(f"Unknown protocol for mock demo: {protocol}. Use P0, P1, or P2.")
+    return channels[protocol]()
 
 
 class MockAgent:
