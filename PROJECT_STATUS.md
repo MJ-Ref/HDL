@@ -79,57 +79,74 @@ The LPCA (Latent-Path Communication for AI Agents) research project has complete
 
 ---
 
-### Milestone 2-3: Codec Development ⏳ BLOCKED ON CLOUD GPUs
+### Milestone 2-3: Codec Development
 
 **Why M2 is needed:** M1 showed that raw latent channels don't work. Training is required to create semantically meaningful latent packets.
 
-**Cloud GPU Requirements:**
+#### M2-LOCAL-PROTO (Can Run Locally) ✅ READY
+
+| Approach | Details |
+|----------|---------|
+| Base model | Frozen (no gradients) |
+| Train only | Small encoder/decoder MLP (~10M params) |
+| Dataset | 100-500 P1 episodes |
+| Time | ~10-30 min per run |
+
+**Purpose:** Validate pipeline before cloud spend.
+
+#### M2-SCALE (Requires Cloud GPUs) ⏳ PENDING
+
 | Resource | Minimum | Recommended |
 |----------|---------|-------------|
 | GPU | 1× A100 40GB | 4× A100 80GB |
-| VRAM | 40GB | 80GB |
 | Time | 40-80 GPU-hours | - |
 | Cost | $50-100 | $100-200 |
 
-**Recommended Providers:**
-1. **Modal.com** ⭐ RECOMMENDED - $2.10/hr A100 40GB, $30/mo free credits, $10K research grants
-2. **Lambda Labs** - $1.10/hr A100 40GB, reliable
-3. **RunPod** - $0.74/hr A100, spot instances
-4. **Vast.ai** - $0.50-1.00/hr, community market
-
-**Why Modal is Recommended:**
-- $30/month free credits (covers ~14 hours of A100 40GB)
-- **$10,000 academic research grants available**
-- Serverless - only pay for compute, no idle costs
-- Python-native API, easy to integrate with existing code
-- No GPU provisioning/setup hassle
-
-**Why Local M3 Max is Insufficient:**
-- Training requires full model gradients (~12GB memory)
-- MPS doesn't support all training operations efficiently
-- Would take 10-20× longer than cloud A100
+**Recommended Provider: Modal.com** ⭐
+- $30/month free credits (~14 hours A100)
+- $10,000 academic research grants available
+- Serverless - only pay for compute
+- Python-native API
 
 ---
 
 ## Recent Progress
 
+### Sanity Checks (Run Before Scaling) ✅ PASSED
+
+| Check | Result | Finding |
+|-------|--------|---------|
+| Single Agent Full Info | **70%** success | Model competent with all info |
+| Injection Test | L2=165, KL=0.06 | Plumbing works correctly |
+| Answer Parsing | 90% (9/10) | Parsing logic robust |
+
+**Critical Insight:** Single agent (70%) >> P1 two-agent (30%) >> P0 (0%)
+This validates **communication IS the bottleneck** - ~40% capability lost when info is split.
+
 ### Complete Experiment Results (Qwen-2.5-3B, Constraint Satisfaction)
 
 | Protocol | Success | 95% CI | Method | Status |
 |----------|---------|--------|--------|--------|
+| Single Agent | **70%** | - | Full information | Reference |
 | P0 | 0% | [0%, 16.1%] | No communication | Baseline |
-| **P1** | **30%** | **[14.5%, 51.9%]** | **Text messages** | **Best** |
+| **P1** | **30%** | **[14.5%, 51.9%]** | **Text messages** | **Best 2-agent** |
 | E0 | 0% | [0%, 27.8%] | CIPHER embeddings | ❌ Failed |
-| A0 L9 | 0% | [0%, 27.8%] | Activation (early layer) | ❌ Failed |
-| A0 L18 | 0% | [0%, 27.8%] | Activation (mid layer) | ❌ Failed |
-| A0 L27 | 0% | [0%, 27.8%] | Activation (late layer) | ❌ Failed |
+| A0 (all layers) | 0% | [0%, 27.8%] | Activation injection | ❌ Failed |
 
 **Key Findings:**
-1. **P1 >> P0** confirmed - text communication helps (30% vs 0%)
-2. **E0 = P0** - raw embeddings don't transfer semantics
-3. **A0 = P0** - raw activations don't transfer semantics at ANY layer
+1. **Single Agent (70%) >> P1 (30%)** - communication IS the bottleneck
+2. **P1 >> P0** confirmed - text communication helps (30% vs 0%)
+3. **E0 = A0 = P0** - raw latent channels don't transfer semantics
 4. **Conclusion:** Latent communication requires TRAINING to be effective
 5. **Safety:** All E5 metrics passed pre-committed thresholds
+
+### Wall Time (Corrected)
+
+| Operation | Actual Time | Notes |
+|-----------|-------------|-------|
+| Single episode | ~28s | Full generation cycle |
+| Two-agent episode | ~50-60s | Multi-turn dialogue |
+| Model load | ~3s | Qwen-2.5-3B on MPS |
 
 ### Analysis Capabilities
 - **plot_results.py**: Success rates, capability vs bits, distributions
@@ -222,23 +239,29 @@ HDL/
 3. ~~Run E3 CIPHER evaluation~~ - Done (E0=0%, negative result)
 4. ~~Run E4 layer sweep~~ - Done (A0=0% at L9, L18, L27)
 5. ~~Run E5 safety evaluation~~ - Done (All metrics PASS)
+6. ~~Fix prompt/parsing issues~~ - Done (removed {json} placeholder, added fallback)
+7. ~~Add sanity checks~~ - Done (single-agent, injection, parsing)
+8. ~~Run sanity checks~~ - Done (all passed)
 
-### 🚀 NEXT: Milestone 2 (Requires Cloud GPUs)
+### 🔄 IN PROGRESS
+9. **Run E1 with 50 episodes** - Validating fixes with larger sample
 
-**Decision Point:** Proceed to M2 codec training?
-- **Rationale for YES:** M1 negative result is expected - untrained channels can't decode semantics. M2 will train codecs to make latent communication meaningful.
-- **Rationale for NO:** Could be premature if task design is the issue, not channel training.
+### 📋 NEXT: Local Tight Loops (Before Cloud)
 
-**If proceeding to M2:**
-1. **Provision cloud GPU** - Lambda Labs A100 recommended (~$50-100)
-2. **Collect P1 training data** - 1000+ successful episodes
-3. **Train encoder-decoder** - Map text messages to latent packets
-4. **Evaluate L1** - Compare trained latent vs P1 text
+**Step 1: Run E2 (Text Baseline Sweep)**
+- Sweep P1-P5 protocols
+- Establish strong teacher baseline
+- Get capability-vs-bits curve
 
-### Alternative: Scale Up E1 for Publication
-- Run 100+ episodes for tighter confidence intervals
-- Run on additional task types (arithmetic, program synthesis)
-- Can be done locally on M3 Max
+**Step 2: M2-LOCAL-PROTO**
+- Validate codec training pipeline locally
+- Freeze base model, train small encoder/decoder
+- Confirm loss decreases, generation not broken
+
+**Step 3: Scale to Cloud (When Ready)**
+- Use Modal.com ($30/mo free credits)
+- Collect 1000+ P1 episodes
+- Full k-sweep for codec training
 
 ---
 

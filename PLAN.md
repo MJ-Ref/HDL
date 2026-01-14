@@ -229,7 +229,7 @@ This work makes the following contributions:
 
 ---
 
-### Milestone 2: Continuous Codec (Weeks 9-14) ⏳ REQUIRES CLOUD GPUs
+### Milestone 2: Continuous Codec (Weeks 9-14)
 
 **Objective:** Train encoder-decoder to make latent communication meaningful.
 
@@ -237,23 +237,54 @@ This work makes the following contributions:
 M1 showed that raw latent channels (E0, A0) don't work - the receiver can't interpret
 untrained activations. M2 trains a codec to create semantically meaningful latent packets.
 
+---
+
+#### M2-LOCAL-PROTO: Local Prototyping (Can run on M3 Max)
+
+**Purpose:** Validate pipeline, debug architecture, iterate quickly before cloud spend.
+
+**Approach:**
+- **Freeze base model** - no gradients through transformer
+- Train only small encoder/decoder MLPs (~10M params)
+- Use small dataset (100-500 successful P1 episodes)
+- Single k value (k=16) for initial validation
+
+**Local Feasibility:**
+- Memory: ~6GB model (frozen) + ~100MB codec = fits comfortably
+- Speed: ~10-30 min for one training run
+- Can iterate 5-10x per day locally
+
+**Exit Criteria:**
+- [ ] Pipeline works end-to-end (encode → inject → decode)
+- [ ] Loss decreases during training
+- [ ] Qualitative: injected representations don't break generation
+
+---
+
+#### M2-SCALE: Full Training (Requires Cloud GPUs)
+
+**Purpose:** Train high-quality codec with full sweeps once pipeline is validated.
+
+**Approach:**
+- Large dataset (1000+ successful P1 episodes)
+- Sweep k ∈ {4, 8, 16, 32, 64}
+- Multiple architecture variants
+- Full evaluation matrix
+
 **Cloud GPU Requirements:**
-- **Minimum:** 1× A100 40GB or 2× RTX 4090 (24GB each)
-- **Recommended:** 4× A100 80GB for faster iteration
-- **Estimated Cost:** $200-500 for full M2 experiments
+- **Minimum:** 1× A100 40GB ($2.10/hr on Modal)
+- **Recommended:** 4× A100 for parallel sweeps
+- **Estimated Cost:** $50-200 total
 - **Estimated Time:** 40-80 GPU-hours
 
-**Why Local M3 Max is Insufficient:**
-- Training requires batched forward/backward passes through 3B model
-- Memory: ~12GB for model + gradients + optimizer states
-- MPS doesn't support all operations needed for efficient training
-- Local would take 10-20× longer than cloud A100
-
 **Cloud Options:**
-1. **Lambda Labs:** $1.10/hr for A100 40GB, ~$50-100 total
-2. **RunPod:** $0.74/hr for A100 40GB, ~$35-75 total
-3. **Vast.ai:** $0.50-1.00/hr for A100, ~$25-80 total
-4. **Google Colab Pro+:** $50/month, A100 access
+| Provider | GPU | $/hr | Notes |
+|----------|-----|------|-------|
+| **Modal.com** ⭐ | A100 40GB | $2.10 | $30/mo free, $10K research grants |
+| Lambda Labs | A100 40GB | $1.10 | Reliable |
+| RunPod | A100 40GB | $0.74 | Spot instances |
+
+---
 
 **Deliverables:**
 - [ ] Encoder-decoder architecture for continuous packets
@@ -266,11 +297,6 @@ untrained activations. M2 trains a codec to create semantically meaningful laten
 2. Train encoder E: text message → k latent vectors
 3. Train decoder D: k vectors → prefix embeddings for receiver
 4. Loss: behavior cloning (match P1 outputs) + reconstruction
-
-**Experiments:**
-1. **Packet size sweep:** k ∈ {4, 8, 16, 32, 64}
-2. **Injection comparison:** prefix vs mid-layer (if time permits)
-3. **Sensitivity analysis:** perturbation robustness of learned packets
 
 **Exit Criteria:**
 - L1 achieves ≥50% of P1 capability at k=16

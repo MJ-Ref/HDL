@@ -380,7 +380,7 @@ def main():
     parser.add_argument("--n_episodes", type=int, default=10, help="Episodes per protocol")
     parser.add_argument("--task", type=str, default="constraint_satisfaction")
     parser.add_argument("--difficulty", type=str, default="easy", choices=["easy", "medium", "hard"])
-    parser.add_argument("--model", type=str, default="TinyLlama/TinyLlama-1.1B-Chat-v1.0")
+    parser.add_argument("--model", type=str, default="Qwen/Qwen2.5-3B-Instruct")
     parser.add_argument("--device", type=str, default="mps")
     parser.add_argument("--output", type=str, default="results")
 

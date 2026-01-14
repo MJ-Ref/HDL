@@ -497,8 +497,14 @@ def main():
     parser.add_argument(
         "--mock",
         action="store_true",
-        default=True,
-        help="Use mock agents (default)",
+        default=False,
+        help="Use mock agents instead of real LLM",
+    )
+    parser.add_argument(
+        "--no-llm",
+        dest="mock",
+        action="store_true",
+        help="Alias for --mock",
     )
     parser.add_argument(
         "--output",

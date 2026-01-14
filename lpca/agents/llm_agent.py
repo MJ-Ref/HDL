@@ -45,18 +45,21 @@ class LLMAgent(BaseAgent):
 
     def _get_default_system_prompt(self) -> str:
         """Get default system prompt for the agent."""
-        return f"""You are Agent {self.agent_id}. You have PARTIAL information. Your partner has the REST.
+        return f"""You are Agent {self.agent_id}. You have PARTIAL information about a constraint satisfaction problem. Your partner has the REST.
 
 IMPORTANT: You CANNOT solve this alone. You MUST share info first.
 
 Response format:
-- First turn: MESSAGE: <share your constraints>
-- After receiving partner's info: ANSWER: <json solution>
+- First turn: Share your constraints with MESSAGE: <your constraints>
+- After receiving partner's info: Solve and respond with ANSWER: followed by a JSON object
 
-Example MESSAGE: My constraints are x1+x2>=1 and x3=0.
-Example ANSWER: {{"x1":1,"x2":0,"x3":0}}
+Example first turn:
+MESSAGE: My constraints are x1+x2>=1 and x3=0
 
-ALWAYS share your constraints before answering."""
+Example final answer (only after you have ALL constraints):
+ANSWER: the solution as a JSON object with variable assignments
+
+ALWAYS share your constraints before attempting to answer. Only submit ANSWER when you have enough information to solve."""
 
     def format_prompt(
         self,
@@ -216,31 +219,59 @@ ALWAYS share your constraints before answering."""
     def _extract_final_answer(self, text: str) -> Optional[str]:
         """Extract final answer from response.
 
-        Only extracts answer if explicitly marked with ANSWER: prefix.
+        Strategy:
+        1. Look for explicit ANSWER: prefix (preferred)
+        2. Fallback: find last valid JSON object in response (if ANSWER keyword present)
+
         Does NOT extract JSON from examples or explanations.
         """
+        import json as json_module
+
         # Must have explicit ANSWER: prefix (not in examples)
         # Look for ANSWER: at start of line or after newline
         answer_match = re.search(r"(?:^|\n)\s*ANSWER:\s*(\{[^}]+\})", text, re.IGNORECASE)
         if answer_match:
-            return answer_match.group(1).strip()
+            candidate = answer_match.group(1).strip()
+            if self._is_valid_json(candidate):
+                return candidate
 
         # Also try FINAL ANSWER:
         final_match = re.search(r"(?:^|\n)\s*FINAL ANSWER:\s*(\{[^}]+\})", text, re.IGNORECASE)
         if final_match:
-            return final_match.group(1).strip()
+            candidate = final_match.group(1).strip()
+            if self._is_valid_json(candidate):
+                return candidate
 
-        # Check for ANSWER: with non-JSON content
-        simple_match = re.search(r"(?:^|\n)\s*ANSWER:\s*([^\n]+)", text, re.IGNORECASE)
-        if simple_match:
-            answer = simple_match.group(1).strip()
-            # Don't return if it's just explaining the format
-            if "example" not in answer.lower() and "{" in answer:
-                json_match = re.search(r"(\{[^}]+\})", answer)
-                if json_match:
-                    return json_match.group(1)
+        # Fallback: if "ANSWER:" or "ANSWER is:" appears (but not "the answer is")
+        # This catches "the ANSWER is:" but not "the answer is"
+        if re.search(r"(?<![tT]he\s)\bANSWER\s*(?:is\s*)?[:\-]", text, re.IGNORECASE):
+            # Find all JSON-like objects in the text
+            json_candidates = re.findall(r'\{[^{}]+\}', text)
+            if json_candidates:
+                # Take the last one (most likely the actual answer)
+                for candidate in reversed(json_candidates):
+                    # Skip if it looks like an example (contains "example" nearby)
+                    idx = text.rfind(candidate)
+                    context = text[max(0, idx-50):idx].lower()
+                    if "example" in context:
+                        continue
+                    if self._is_valid_json(candidate):
+                        return candidate
 
         return None
+
+    def _is_valid_json(self, text: str) -> bool:
+        """Check if text is valid JSON with variable assignments."""
+        import json as json_module
+        try:
+            obj = json_module.loads(text)
+            # Must be a dict with at least one key
+            if isinstance(obj, dict) and len(obj) > 0:
+                # Keys should look like variable names (x1, x2, etc.)
+                return any(re.match(r'^[a-zA-Z_]\w*$', k) for k in obj.keys())
+            return False
+        except (json_module.JSONDecodeError, ValueError):
+            return False
 
 
 class DualAgentRunner:
