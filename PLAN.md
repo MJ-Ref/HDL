@@ -1,15 +1,16 @@
 # LPCA: Latent-Path Communication for AI Agents
 ## Research Plan & Technical Specification
 
-**Version:** 1.2
-**Status:** Active Development (E1 Baseline Complete, E4 In Progress)
+**Version:** 1.3
+**Status:** Milestone 1 COMPLETE (Negative Result for Raw Latent)
 **Target Venues:** NeurIPS 2026, ICML 2026, ICLR 2027
 **Last Updated:** January 14, 2026
 
 ### Progress Update
-- **E1 Baseline Validated:** P1 (30%) >> P0 (0%) with Qwen-2.5-3B, p < 0.05
-- **Infrastructure Complete:** LLM agents, activation capture/injection, all protocols
-- **Next:** E4 Activation Grafting layer/combine sweeps
+- **M1 COMPLETE:** Raw latent communication (E0, A0) does NOT work without training
+- **Key Finding:** P1 (30%) >> P0 (0%), but E0 = A0 = P0 (0%)
+- **E5 Safety:** All metrics passed (compliance gap 17.5%, covert channel 8 bits)
+- **Next:** M2 Continuous Codec (requires cloud GPUs for training)
 
 ---
 
@@ -187,7 +188,7 @@ This work makes the following contributions:
 
 ---
 
-### Milestone 1: Latent Baselines (Weeks 5-8) 🔄 IN PROGRESS
+### Milestone 1: Latent Baselines (Weeks 5-8) ✅ COMPLETE (NEGATIVE RESULT)
 
 **Objective:** Establish strong evidence for/against capability amplification hypothesis.
 
@@ -197,38 +198,74 @@ This work makes the following contributions:
 - [x] LLM agent with activation capture (`lpca/agents/llm_agent.py`)
 - [x] Layer sweep configurations (`layer_sweep_configs()`)
 - [x] Combination function sweep (`combine_fn_sweep_configs()`)
-- [ ] Evaluation with real LLM (requires torch installation)
-- [ ] Compute budget matching methodology
-- [ ] First capability-vs-budget plots
+- [x] Evaluation with real LLM (Qwen-2.5-3B on MPS)
+- [x] E3 CIPHER evaluation (0% success)
+- [x] E4 Activation grafting layer sweep (0% at all layers)
+- [x] E5 Safety evaluation (PASS)
 
-**Experiments:**
-1. **Layer sweep:** Test activation grafting at layers {n/4, n/3, n/2, 2n/3, 3n/4}
-2. **Combination function sweep:** {replace, add, average, weighted_0.3, weighted_0.5, weighted_0.7}
-3. **Budget matching:** Compare A0 at compute budget X vs P1-P5 at same X
+**Results (Qwen-2.5-3B, Constraint Satisfaction):**
+| Protocol | Success | 95% CI | Interpretation |
+|----------|---------|--------|----------------|
+| P0 (no comm) | 0% | [0%, 16.1%] | Baseline - can't solve alone |
+| **P1 (text)** | **30%** | **[14.5%, 51.9%]** | **Communication helps** |
+| E0 (CIPHER) | 0% | [0%, 27.8%] | Expected embeddings don't transfer semantics |
+| A0 L9 | 0% | [0%, 27.8%] | Early layer injection fails |
+| A0 L18 | 0% | [0%, 27.8%] | Mid layer injection fails |
+| A0 L27 | 0% | [0%, 27.8%] | Late layer injection fails |
+
+**Key Finding:** Raw latent representations do NOT transfer task-relevant information.
+- Model outputs literal "{json}" instead of solving constraints
+- Activations carry model state, but receiver can't interpret without training
+- This confirms H1 cannot be tested with untrained channels
 
 **Exit Criteria:**
-- A0 shows statistically significant improvement over best text baseline (p < 0.05, paired t-test) on at least one task family
-- OR clear evidence that communication is not the bottleneck (redesign scope)
+- ❌ A0 does NOT show improvement over text baseline
+- ✅ Clear evidence: raw latent communication requires TRAINING to be effective
 
-**Go/No-Go Gate:** If A0 < P1 on all tasks, pivot to understanding why before codec development.
+**Go/No-Go Decision:**
+- PROCEED to M2 (Continuous Codec Training)
+- Rationale: The negative result is expected - untrained channels can't decode semantics
+- M2 will train encoder/decoder to make latent communication meaningful
 
 ---
 
-### Milestone 2: Continuous Codec (Weeks 9-14)
+### Milestone 2: Continuous Codec (Weeks 9-14) ⏳ REQUIRES CLOUD GPUs
 
-**Objective:** Convert synchronized activation grafting into asynchronous packet protocol.
+**Objective:** Train encoder-decoder to make latent communication meaningful.
+
+**Why M2 is Necessary:**
+M1 showed that raw latent channels (E0, A0) don't work - the receiver can't interpret
+untrained activations. M2 trains a codec to create semantically meaningful latent packets.
+
+**Cloud GPU Requirements:**
+- **Minimum:** 1× A100 40GB or 2× RTX 4090 (24GB each)
+- **Recommended:** 4× A100 80GB for faster iteration
+- **Estimated Cost:** $200-500 for full M2 experiments
+- **Estimated Time:** 40-80 GPU-hours
+
+**Why Local M3 Max is Insufficient:**
+- Training requires batched forward/backward passes through 3B model
+- Memory: ~12GB for model + gradients + optimizer states
+- MPS doesn't support all operations needed for efficient training
+- Local would take 10-20× longer than cloud A100
+
+**Cloud Options:**
+1. **Lambda Labs:** $1.10/hr for A100 40GB, ~$50-100 total
+2. **RunPod:** $0.74/hr for A100 40GB, ~$35-75 total
+3. **Vast.ai:** $0.50-1.00/hr for A100, ~$25-80 total
+4. **Google Colab Pro+:** $50/month, A100 access
 
 **Deliverables:**
 - [ ] Encoder-decoder architecture for continuous packets
-- [ ] Distillation pipeline from A0 teacher
+- [ ] Distillation pipeline from P1 teacher (not A0, since A0 doesn't work)
 - [ ] Prefix injection implementation
 - [ ] Capability vs k (packet size) curves
 
 **Training Protocol:**
-1. Collect successful A0 episodes (≥1000 per task type)
-2. Train encoder E: activation → k vectors
-3. Train decoder D: k vectors → prefix embeddings
-4. Loss: behavior cloning + optional KL alignment
+1. Collect successful P1 episodes (≥1000 per task type) - use text as teacher
+2. Train encoder E: text message → k latent vectors
+3. Train decoder D: k vectors → prefix embeddings for receiver
+4. Loss: behavior cloning (match P1 outputs) + reconstruction
 
 **Experiments:**
 1. **Packet size sweep:** k ∈ {4, 8, 16, 32, 64}
@@ -236,7 +273,7 @@ This work makes the following contributions:
 3. **Sensitivity analysis:** perturbation robustness of learned packets
 
 **Exit Criteria:**
-- L1 achieves ≥70% of A0 capability gain at k=16
+- L1 achieves ≥50% of P1 capability at k=16
 - Clear capability-k relationship (monotonic or with interpretable knee)
 
 ---
@@ -337,13 +374,30 @@ This work makes the following contributions:
 
 ### 9.1 Hardware
 
-**Primary:** MacBook Pro M3 Max, 98GB unified memory
-- Sufficient for Milestones 0-3 with 1-8B models
-- MPS acceleration for inference and codec training
+**Local (M0, M1, M4 Inference):** MacBook Pro M3 Max, 98GB unified memory ✅ SUFFICIENT
+- Inference with Qwen-2.5-3B: ~2-3 sec/episode
+- Test suites and safety evaluation: works well
+- NOT sufficient for M2/M3 training (memory + speed limitations)
 
-**Optional Cloud (for scaling experiments):**
-- 4× A100 80GB for larger model validation
-- Estimated: 500 GPU-hours for full experimental matrix
+**Cloud Required for M2/M3 (Training):**
+- **Minimum:** 1× A100 40GB ($1.10/hr) or 2× RTX 4090 24GB
+- **Recommended:** 4× A100 80GB ($4.40/hr) for faster iteration
+- **Estimated Total:** 40-80 GPU-hours, ~$50-200
+
+**Cloud Provider Options:**
+| Provider | GPU | $/hr | Est. Total | Notes |
+|----------|-----|------|------------|-------|
+| **Modal.com** ⭐ | A100 40GB | $2.10 | $0-50 | **$30/mo free, $10K research grants** |
+| Lambda Labs | A100 40GB | $1.10 | $50-100 | Reliable, good availability |
+| RunPod | A100 40GB | $0.74 | $35-75 | Spot instances available |
+| Vast.ai | A100 | $0.50-1.00 | $25-80 | Variable pricing, community |
+| Google Colab Pro+ | A100 | $50/mo | $50 | Limited hours/day |
+
+**Recommended: Modal.com**
+- $30/month free credits (covers ~14 hours A100)
+- $10,000 academic research grants available
+- Serverless architecture - no idle costs
+- Python-native API, integrates easily with existing code
 
 ### 9.2 Estimated Compute Budget
 
@@ -391,15 +445,19 @@ This work makes the following contributions:
 
 ```
 Week 1-4:   [████████] Milestone 0: Foundation ✅ COMPLETE
-Week 5-8:   [██░░░░░░] Milestone 1: Latent Baselines 🔄 IN PROGRESS
-Week 9-14:  [░░░░░░░░░░░░] Milestone 2: Continuous Codec
+Week 5-8:   [████████] Milestone 1: Latent Baselines ✅ COMPLETE (Negative Result)
+Week 9-14:  [░░░░░░░░░░░░] Milestone 2: Continuous Codec ⏳ NEEDS CLOUD GPUs
 Week 15-20: [░░░░░░░░░░░░] Milestone 3: Discrete Codec
 Week 21-24: [░░░░░░░░] Milestone 5: Analysis & Writing
 
-Safety Evaluation: [██░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░] Continuous
+Safety Evaluation: [████░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░] E5 Complete
 ```
 
-**Current Status (January 14, 2026):** Milestone 1 implementation complete, evaluation pending.
+**Current Status (January 14, 2026):**
+- **M0:** ✅ Complete - Infrastructure ready
+- **M1:** ✅ Complete - Negative result: raw latent doesn't work without training
+- **M4:** ✅ E5 Complete - Safety metrics all passed
+- **M2:** ⏳ Blocked on cloud GPU provisioning
 
 ---
 

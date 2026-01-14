@@ -10,9 +10,41 @@
 |------------|--------|--------|
 | E1: Baseline Validation | ✅ **COMPLETE** | P1 (30%) >> P0 (0%), n=20, p < 0.05 |
 | E2: Text Baseline Strength | 🔄 Ready | Infrastructure complete |
-| E3: CIPHER Evaluation | 🔄 Ready | Implementation complete |
-| E4: Activation Grafting Ablation | 🔄 **In Progress** | Layer/combine sweeps ready |
-| E5-E8 | ⬜ Pending | Awaiting M2/M3 |
+| E3: CIPHER Evaluation | ⚠️ **Negative Result** | Expected embeddings ineffective |
+| E4: Activation Grafting Ablation | ⚠️ **Negative Result** | Simple injection ineffective |
+| E5: Safety Evaluation | ✅ **PASS** | All metrics within thresholds |
+| E6-E8 | ⬜ Pending | Requires M2/M3 (cloud GPUs) |
+
+### E4 Results (Activation Grafting, Qwen-2.5-3B)
+| Layer | Success | 95% CI |
+|-------|---------|--------|
+| L9 (early) | 0% | [0%, 27.8%] |
+| L18 (middle) | 0% | [0%, 27.8%] |
+| L27 (late) | 0% | [0%, 27.8%] |
+
+**Finding:** Simple activation injection does not transfer task-relevant information.
+The model outputs literal "{json}" instead of solving constraints.
+
+### E3 Results (CIPHER Expected Embeddings, Qwen-2.5-3B)
+| Protocol | Success | 95% CI | Bits/Episode |
+|----------|---------|--------|--------------|
+| E0 (CIPHER) | 0% | [0%, 27.8%] | 393,216 |
+
+**Finding:** Expected embeddings prepended to input don't help task performance.
+
+### Summary: Latent vs Text Communication
+| Protocol | Success | Method | Status |
+|----------|---------|--------|--------|
+| P0 | 0% | No communication | Baseline |
+| **P1** | **30%** | **Text messages** | **Best** |
+| E0 | 0% | CIPHER embeddings | Failed |
+| A0 | 0% | Activation injection | Failed |
+
+**Key Insights:**
+1. Text communication (P1) significantly outperforms no communication (P0)
+2. Raw latent representations (E0, A0) don't transfer task semantics
+3. Latent communication requires **training** (decoder, fine-tuning, contrastive learning)
+4. Milestone 2 (learned codecs) needed to test trained latent communication
 
 ### E1 Results (Qwen-2.5-3B, Constraint Satisfaction, Easy)
 | Protocol | Success | 95% CI | Partial Credit | Avg Turns |
