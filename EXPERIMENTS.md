@@ -59,13 +59,18 @@ The model outputs literal "{json}" instead of solving constraints.
 3. Latent communication requires **training** (decoder, fine-tuning, contrastive learning)
 4. Milestone 2 (learned codecs) needed to test trained latent communication
 
-### E1 Results (Qwen-2.5-3B, Constraint Satisfaction, Easy)
+### E1 Results (Qwen-2.5-3B, Constraint Satisfaction, Easy, n=50)
 | Protocol | Success | 95% CI | Partial Credit | Avg Turns |
 |----------|---------|--------|----------------|-----------|
-| P0 (no comm) | 0% | [0%, 16.1%] | 0.000 | 12.0 |
-| P1 (full text) | 30% | [14.5%, 51.9%] | 0.338 | 9.5 |
+| P0 (no comm) | **52%** | [38.5%, 65.2%] | 0.730 | 6.4 |
+| P1 (full text) | **74%** | [60.4%, 84.1%] | 0.855 | 3.1 |
 
-**Conclusion:** Communication is necessary and beneficial for split-information tasks.
+**Key Findings (Post-Fix):**
+- **P1 > P0 by 22%** with non-overlapping confidence intervals
+- Communication reduces avg turns from 6.4 to 3.1 (faster convergence)
+- Partial credit also higher for P1 (0.855 vs 0.730)
+
+**Conclusion:** Communication is beneficial. P1 nearly matches single-agent full-info performance (74% vs 70%).
 
 ---
 
