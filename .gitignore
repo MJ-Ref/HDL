@@ -69,3 +69,4 @@ data/
 .env
 *.key
 credentials.json
+results/

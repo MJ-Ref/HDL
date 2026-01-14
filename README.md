@@ -2,8 +2,8 @@
 
 A research framework for evaluating machine-native communication between multi-agent AI systems.
 
-[![Tests](https://img.shields.io/badge/tests-77%20passing-brightgreen)](tests/)
-[![Milestone](https://img.shields.io/badge/milestone-1%20in%20progress-blue)](PROJECT_STATUS.md)
+[![Tests](https://img.shields.io/badge/tests-126%20passing-brightgreen)](tests/)
+[![Milestone](https://img.shields.io/badge/E1-validated-success)](PROJECT_STATUS.md)
 [![Python](https://img.shields.io/badge/python-3.10%2B-blue)](setup.py)
 
 ## Overview
@@ -14,24 +14,25 @@ This project tests whether multi-agent AI systems can achieve higher capability 
 
 ## Current Status
 
-**Milestone 1: Latent Baselines** - Implementation complete, evaluation pending
+**Milestone 1: Latent Baselines** - E1 Baseline Validated, E4 In Progress
 
 | Component | Status |
 |-----------|--------|
 | Text Baselines (P0-P5) | Complete |
 | CIPHER Channel (E0) | Complete |
 | Activation Grafting (A0) | Complete |
-| Test Suite | 77 tests passing |
-| Demo Experiment | Working |
+| LLM Integration | Complete (Qwen-2.5-3B) |
+| Test Suite | 126 tests passing |
+| E1 Baseline | **Validated** |
 
-**Preliminary Results (Mock Agents):**
+**E1 Baseline Results (Qwen-2.5-3B, n=20):**
 ```
-Protocol   Success    Partial    Turns      Bits
---------------------------------------------------
-P0         0.000      0.000      20.0       0
-P1         0.200      0.525      3.0        565
-P2         0.200      0.525      3.0        565
+Protocol   Success    95% CI           Partial    Turns
+---------------------------------------------------------
+P0         0.0%       [0.0%, 16.1%]    0.000      12.0
+P1         30.0%      [14.5%, 51.9%]   0.338      9.5
 ```
+**Key Finding:** Communication significantly improves success (P1 >> P0, p < 0.05)
 
 ## Key Features
 
@@ -75,8 +76,14 @@ python -m pytest tests/ -v
 ### With Real LLM (requires torch)
 
 ```bash
-# Install full dependencies
-pip install -e ".[full]"
+# Install PyTorch and transformers
+pip install torch transformers accelerate
+
+# Run E1 baseline experiment
+python scripts/run_llm_experiment.py --protocols P0,P1 --n_episodes 20
+
+# Run activation grafting experiment
+python scripts/run_activation_experiment.py --layer 18 --n_episodes 10
 
 # Run with Llama model
 python scripts/demo_experiment.py --model meta-llama/Llama-3.2-1B-Instruct

@@ -8,11 +8,19 @@
 
 | Experiment | Status | Result |
 |------------|--------|--------|
-| E1: Baseline Validation | ✅ Preliminary | P1 (20%) >> P0 (0%) with mock agents |
+| E1: Baseline Validation | ✅ **COMPLETE** | P1 (30%) >> P0 (0%), n=20, p < 0.05 |
 | E2: Text Baseline Strength | 🔄 Ready | Infrastructure complete |
 | E3: CIPHER Evaluation | 🔄 Ready | Implementation complete |
-| E4: Activation Grafting Ablation | 🔄 Ready | Implementation complete |
+| E4: Activation Grafting Ablation | 🔄 **In Progress** | Layer/combine sweeps ready |
 | E5-E8 | ⬜ Pending | Awaiting M2/M3 |
+
+### E1 Results (Qwen-2.5-3B, Constraint Satisfaction, Easy)
+| Protocol | Success | 95% CI | Partial Credit | Avg Turns |
+|----------|---------|--------|----------------|-----------|
+| P0 (no comm) | 0% | [0%, 16.1%] | 0.000 | 12.0 |
+| P1 (full text) | 30% | [14.5%, 51.9%] | 0.338 | 9.5 |
+
+**Conclusion:** Communication is necessary and beneficial for split-information tasks.
 
 ---
 

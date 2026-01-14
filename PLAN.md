@@ -1,10 +1,15 @@
 # LPCA: Latent-Path Communication for AI Agents
 ## Research Plan & Technical Specification
 
-**Version:** 1.1
-**Status:** Active Development (Milestone 1 in progress)
+**Version:** 1.2
+**Status:** Active Development (E1 Baseline Complete, E4 In Progress)
 **Target Venues:** NeurIPS 2026, ICML 2026, ICLR 2027
 **Last Updated:** January 14, 2026
+
+### Progress Update
+- **E1 Baseline Validated:** P1 (30%) >> P0 (0%) with Qwen-2.5-3B, p < 0.05
+- **Infrastructure Complete:** LLM agents, activation capture/injection, all protocols
+- **Next:** E4 Activation Grafting layer/combine sweeps
 
 ---
 
