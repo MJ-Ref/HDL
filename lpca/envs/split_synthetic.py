@@ -31,13 +31,15 @@ class ConstraintSatisfactionTask(BaseEnvironment):
         super().__init__("constraint_satisfaction", difficulty, params)
 
     def _get_easy_params(self) -> Dict[str, Any]:
-        return {"n_variables": 3, "n_constraints": 4, "domain_size": 2}
-
-    def _get_medium_params(self) -> Dict[str, Any]:
+        # Tightened: more variables & constraints to ensure communication is required
+        # Old: n_vars=3, n_constraints=4, domain=2 gave P0=52% (too high)
         return {"n_variables": 4, "n_constraints": 8, "domain_size": 3}
 
+    def _get_medium_params(self) -> Dict[str, Any]:
+        return {"n_variables": 5, "n_constraints": 12, "domain_size": 3}
+
     def _get_hard_params(self) -> Dict[str, Any]:
-        return {"n_variables": 5, "n_constraints": 12, "domain_size": 4}
+        return {"n_variables": 6, "n_constraints": 16, "domain_size": 4}
 
     def generate_task(self, seed: int) -> TaskInstance:
         """Generate a constraint satisfaction problem split between agents."""
@@ -51,19 +53,31 @@ class ConstraintSatisfactionTask(BaseEnvironment):
         # Generate variable names
         var_names = [f"x{i}" for i in range(1, n_vars + 1)]
 
-        # Generate a satisfying assignment first
-        solution = {v: self._rng.randint(0, domain_size - 1) for v in var_names}
+        # Try multiple times to get a communication-requiring task
+        max_attempts = 20
+        for attempt in range(max_attempts):
+            # Generate a satisfying assignment first
+            solution = {v: self._rng.randint(0, domain_size - 1) for v in var_names}
 
-        # Generate constraints that the solution satisfies
-        constraints = self._generate_constraints(
-            var_names, solution, n_constraints, domain_size
-        )
+            # Generate constraints that the solution satisfies
+            constraints = self._generate_constraints(
+                var_names, solution, n_constraints, domain_size
+            )
 
-        # Shuffle and split constraints
-        self._rng.shuffle(constraints)
-        mid = len(constraints) // 2
-        constraints_A = constraints[:mid]
-        constraints_B = constraints[mid:]
+            # Shuffle and split constraints
+            self._rng.shuffle(constraints)
+            mid = len(constraints) // 2
+            constraints_A = constraints[:mid]
+            constraints_B = constraints[mid:]
+
+            # Check that neither agent alone can solve (communication required)
+            solutions_A = self._count_valid_solutions(constraints_A, var_names, domain_size)
+            solutions_B = self._count_valid_solutions(constraints_B, var_names, domain_size)
+
+            # Require at least 2 solutions for each agent alone (ambiguity)
+            if solutions_A >= 2 and solutions_B >= 2:
+                break
+            # If last attempt, use anyway (fallback)
 
         # Format observations
         obs_A = self._format_observation(var_names, constraints_A, domain_size, "A")
@@ -81,8 +95,25 @@ class ConstraintSatisfactionTask(BaseEnvironment):
                 "n_constraints": n_constraints,
                 "domain_size": domain_size,
                 "all_constraints": constraints,
+                "solutions_A_alone": solutions_A,
+                "solutions_B_alone": solutions_B,
             },
         )
+
+    def _count_valid_solutions(
+        self,
+        constraints: List[str],
+        var_names: List[str],
+        domain_size: int,
+    ) -> int:
+        """Count how many solutions satisfy a set of constraints."""
+        count = 0
+        # Enumerate all possible assignments
+        for values in itertools.product(range(domain_size), repeat=len(var_names)):
+            assignment = dict(zip(var_names, values))
+            if all(self._check_constraint(c, assignment) for c in constraints):
+                count += 1
+        return count
 
     def _generate_constraints(
         self,
