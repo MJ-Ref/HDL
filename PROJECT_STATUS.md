@@ -123,22 +123,41 @@ The LPCA (Latent-Path Communication for AI Agents) research project has complete
 **Critical Insight:** Single agent (70%) >> P1 two-agent (30%) >> P0 (0%)
 This validates **communication IS the bottleneck** - ~40% capability lost when info is split.
 
-### Complete Experiment Results (Qwen-2.5-3B, Constraint Satisfaction, n=50)
+### Experiment Results History
+
+#### Pre-Fix Results (INVALID - prompt bug)
+E1/E3/E4 results before prompt fix showed P0=0%, but model was outputting literal `{json}`.
+These results are **not valid** - see tag `baseline-v0.1-postfix` for audit trail.
+
+#### Post-Fix Results (baseline-v0.1-postfix, n=50)
 
 | Protocol | Success | 95% CI | Method | Notes |
 |----------|---------|--------|--------|-------|
 | Single Agent | **70%** | - | Full information | Reference (n=20) |
-| P0 | **52%** | [38.5%, 65.2%] | No communication | Improved parsing |
+| P0 | **52%** | [38.5%, 65.2%] | No communication | ⚠️ TOO HIGH |
 | **P1** | **74%** | **[60.4%, 84.1%]** | **Text messages** | **Best 2-agent** |
-| E0 | 0% | [0%, 27.8%] | CIPHER embeddings | ❌ Failed (n=10) |
-| A0 (all layers) | 0% | [0%, 27.8%] | Activation injection | ❌ Failed (n=10) |
+| E0 | 0% | [0%, 27.8%] | CIPHER embeddings | Needs rerun post-fix |
+| A0 (all layers) | 0% | [0%, 27.8%] | Activation injection | Needs rerun post-fix |
+
+**⚠️ CRITICAL ISSUE: P0 is too high (52%)**
+
+The task is NOT sufficiently communication-limited:
+- Pre-registered expectation: P0 should be 15-25%
+- Actual: P0 = 52%
+- This means agents can often guess correct answers without partner's info
+
+**Root causes to investigate:**
+1. Solution space too large (many valid assignments)
+2. Each agent's local view has low ambiguity
+3. Constraint generation not ensuring both halves are necessary
+
+**Action required:** Tighten S1 task generator before E2/E3/E4
 
 **Key Findings (Post-Fix):**
-1. **P1 (74%) > P0 (52%)** - communication adds ~22% success (non-overlapping CIs)
-2. **Single Agent (70%) ≈ P1 (74%)** - text communication nearly recovers full-info performance!
-3. **E0 = A0 = 0%** - raw latent channels still don't transfer semantics
-4. **P0 baseline higher** - improved prompts/parsing help agents extract answers
-5. **Conclusion:** Communication is valuable; trained latent channels needed for M2
+1. **P1 (74%) > P0 (52%)** - communication adds ~22% (real effect, non-overlapping CIs)
+2. **Single Agent (70%) ≈ P1 (74%)** - text communication works when used
+3. **E0/A0 need rerun** - prior results tied to prompt bug
+4. **P0 too high** - must tighten task before claiming "comm bottleneck"
 
 ### Wall Time (Corrected)
 

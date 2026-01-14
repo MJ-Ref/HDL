@@ -9,12 +9,27 @@
 | Experiment | Status | Result |
 |------------|--------|--------|
 | Sanity Checks | ✅ **PASS** | Single-agent 70%, injection works, parsing robust |
-| E1: Baseline Validation | ✅ **COMPLETE** | P1 (30%) >> P0 (0%), n=20, p < 0.05 |
-| E2: Text Baseline Strength | 🔄 Ready | Infrastructure complete |
-| E3: CIPHER Evaluation | ⚠️ **Negative Result** | Expected embeddings ineffective |
-| E4: Activation Grafting Ablation | ⚠️ **Negative Result** | Simple injection ineffective |
+| E1: Baseline Validation | ⚠️ **NEEDS WORK** | P1=74%, P0=52% (P0 too high!) |
+| E2: Text Baseline Strength | ⏸️ Blocked | Wait for task tightening |
+| E3: CIPHER Evaluation | 🔄 **RERUN NEEDED** | Prior results tied to prompt bug |
+| E4: Activation Grafting | 🔄 **RERUN NEEDED** | Prior results tied to prompt bug |
 | E5: Safety Evaluation | ✅ **PASS** | All metrics within thresholds |
 | E6-E8 | ⬜ Pending | Requires M2/M3 (cloud GPUs) |
+
+### ⚠️ CRITICAL: Task Not Sufficiently Communication-Limited
+
+**Post-fix E1 (n=50):**
+- P0 (no comm): 52% ← **TOO HIGH** (expected: 15-25%)
+- P1 (text): 74%
+- Single-agent: 70%
+
+**Problem:** Agents can often succeed without partner's info. This undermines
+the "communication bottleneck" thesis. Must tighten S1 before E2/E3/E4.
+
+**Action:** Modify constraint satisfaction generator to ensure:
+1. Near-unique satisfying assignment
+2. Each half alone has high ambiguity
+3. Both halves genuinely required
 
 ### Sanity Check Results (Run Before Scaling)
 
@@ -24,9 +39,11 @@
 | Activation Injection | L2=165, changes output | Injection plumbing works correctly |
 | Answer Parsing | 90% accurate | Parsing won't cause false negatives |
 
-**Critical Finding:** Single-agent (70%) >> P1 two-agent (30%) >> P0 (0%)
-- Communication IS the bottleneck (agents lose 40% capability when info split)
-- E4 negative result is real, not a parsing/prompt artifact
+### E3/E4 Status: Rerun Required
+
+Prior E3/E4 results (0% success) were tied to prompt bug where model output
+literal `{json}`. Now that prompts are fixed, E3/E4 must be rerun to get
+valid results. This is critical before codec training.
 
 ### E4 Results (Activation Grafting, Qwen-2.5-3B)
 | Layer | Success | 95% CI |
@@ -60,17 +77,29 @@ The model outputs literal "{json}" instead of solving constraints.
 4. Milestone 2 (learned codecs) needed to test trained latent communication
 
 ### E1 Results (Qwen-2.5-3B, Constraint Satisfaction, Easy, n=50)
+
+**⚠️ WARNING: P0 baseline too high - task needs tightening**
+
 | Protocol | Success | 95% CI | Partial Credit | Avg Turns |
 |----------|---------|--------|----------------|-----------|
 | P0 (no comm) | **52%** | [38.5%, 65.2%] | 0.730 | 6.4 |
 | P1 (full text) | **74%** | [60.4%, 84.1%] | 0.855 | 3.1 |
 
-**Key Findings (Post-Fix):**
-- **P1 > P0 by 22%** with non-overlapping confidence intervals
-- Communication reduces avg turns from 6.4 to 3.1 (faster convergence)
-- Partial credit also higher for P1 (0.855 vs 0.730)
+**What this tells us:**
+- ✅ P1 > P0 by 22% - communication helps (real effect, non-overlapping CIs)
+- ✅ P1 nearly matches single-agent (74% vs 70%) - protocol works
+- ⚠️ P0 = 52% is too high - expected 15-25%
+- ⚠️ Task is NOT sufficiently communication-limited
 
-**Conclusion:** Communication is beneficial. P1 nearly matches single-agent full-info performance (74% vs 70%).
+**Why P0 is too high:**
+The constraint satisfaction task (easy difficulty) allows agents to often
+guess valid solutions without partner's constraints. This violates the
+pre-registered assumption that "solution requires satisfying C_A ∪ C_B."
+
+**Next steps:**
+1. Tighten S1 generator (near-unique solutions, higher ambiguity)
+2. Rerun E1 with tightened task
+3. Only proceed to E2/E3/E4 when P0 < 25%
 
 ---
 
