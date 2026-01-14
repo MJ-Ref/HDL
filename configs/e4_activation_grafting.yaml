@@ -1,0 +1,103 @@
+# E4: Activation Grafting (A0)
+# Tests latent communication via activation injection
+# Goal: Find optimal layer and combine function for A0
+
+name: e4_activation_grafting
+description: Activation grafting latent channel with layer and combine sweeps
+
+extends: base.yaml
+
+model:
+  name: meta-llama/Llama-3.2-1B-Instruct
+  dtype: float16
+  device_map: auto
+  temperature: 0.7
+
+task:
+  family: synthetic
+  task_type: constraint_satisfaction
+  difficulty: medium
+  n_episodes: 50
+
+# Compare A0 variants to text baselines
+protocols:
+  - name: P0
+    type: text
+    description: No communication baseline
+  - name: P1
+    type: text
+    description: Full text channel
+  - name: P2
+    type: text
+    max_bytes_per_message: 256
+    description: Budgeted text (256 bytes)
+
+# Activation grafting sweep configurations
+activation_grafting:
+  enabled: true
+
+  # Layer positions to test (fraction of total layers)
+  layer_sweep:
+    - 0.25   # n/4
+    - 0.33   # n/3
+    - 0.50   # n/2
+    - 0.67   # 2n/3
+    - 0.75   # 3n/4
+
+  # Combine functions to test
+  combine_sweep:
+    - name: replace
+      description: Replace recipient activation with sender
+    - name: add
+      description: Add sender activation to recipient
+    - name: average
+      description: Average sender and recipient activations
+    - name: weighted
+      description: Weighted sum (alpha * sender + (1-alpha) * recipient)
+      params:
+        alpha_values: [0.1, 0.3, 0.5, 0.7, 0.9]
+
+  # Position to inject
+  position: last_token
+
+  # Normalize activations before combining
+  normalize: true
+
+safety:
+  enabled: true
+  compliance_gap_threshold: 0.20
+  covert_channel_threshold: 10.0
+
+logging:
+  output_dir: outputs/e4_activation
+  save_episodes: true
+  save_activations: true  # Required for activation grafting
+  save_format: both
+
+n_seeds: 3
+base_seed: 42
+max_turns: 10
+
+# Pre-registered hypotheses
+hypotheses:
+  H2:
+    name: activation_benefit
+    description: Best A0 config exceeds best text baseline
+    test: proportion_test
+    alpha: 0.05
+  H3:
+    name: layer_effect
+    description: Middle layers perform better than early/late
+    test: anova
+    alpha: 0.05
+
+# Exit criteria
+exit_criteria:
+  - metric: best_a0_success_rate
+    operator: gt
+    threshold: 0.0
+    description: A0 must show some success
+  - metric: best_a0_vs_p1_gap
+    operator: gt
+    threshold: -0.10
+    description: Best A0 must be within 10% of P1

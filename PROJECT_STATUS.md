@@ -1,7 +1,7 @@
 # LPCA Project Status
 
 **Last Updated:** January 14, 2026
-**Current Phase:** Milestone 1 - Latent Baselines (Implementation Complete)
+**Current Phase:** Milestone 1 - Latent Baselines (Ready for Evaluation)
 
 ---
 
@@ -94,12 +94,20 @@ P2         0.200      0.525      3.0        565
 - **CovertChannelProbe**: Hidden channel capacity estimation
 - **Stop Conditions**: All pre-committed thresholds implemented
 
+### Experiment Infrastructure (New)
+- **run_experiment.py**: Full-featured experiment runner with multi-protocol support
+- **Experiment configs**: YAML configs for E1-E5 with inheritance support
+- **Config loader**: Type-safe config loading with dataclass validation
+- **Results aggregation**: Cross-experiment aggregation with LaTeX export
+
 ### Test Coverage
 - **Channels:** 18 tests
 - **Environments:** 22 tests
 - **Metrics:** 18 tests
 - **Integration:** 7 tests
-- **Total:** 77 tests, 100% pass rate
+- **Safety:** 28 tests
+- **Config Loader:** 21 tests
+- **Total:** 126 tests, 100% pass rate
 
 ---
 
@@ -107,9 +115,17 @@ P2         0.200      0.525      3.0        565
 
 ```
 HDL/
+├── configs/                 # Experiment configurations
+│   ├── base.yaml           # Base configuration
+│   ├── e1_baseline.yaml    # E1: Text baseline validation
+│   ├── e2_task_sweep.yaml  # E2: Task family sweep
+│   ├── e3_cipher.yaml      # E3: CIPHER evaluation
+│   ├── e4_activation_grafting.yaml  # E4: Activation grafting
+│   └── e5_safety.yaml      # E5: Safety evaluation
+│
 ├── docs/                    # Planning documents
-│   ├── PLAN.md             # Master research plan (updated)
-│   ├── EXPERIMENTS.md      # Experimental protocols (updated)
+│   ├── PLAN.md             # Master research plan
+│   ├── EXPERIMENTS.md      # Experimental protocols
 │   ├── METRICS.md          # Pre-registered metrics
 │   ├── BASELINES.md        # Baseline specifications
 │   ├── SAFETY_PROTOCOL.md  # Safety evaluation protocol
@@ -117,18 +133,22 @@ HDL/
 │
 ├── lpca/                    # Main package
 │   ├── core/               # Infrastructure (complete)
+│   │   ├── config_loader.py  # YAML config loading with inheritance
+│   │   └── ...
 │   ├── envs/               # Task environments (complete)
 │   ├── channels/           # Communication protocols (complete)
 │   ├── agents/             # Agent implementations (complete)
 │   └── safety/             # Safety evaluation (complete)
 │
 ├── scripts/
+│   ├── run_experiment.py   # Full experiment runner
 │   ├── demo_experiment.py  # End-to-end demo
-│   └── analysis/           # Analysis scripts (new)
+│   └── analysis/           # Analysis scripts
 │       ├── plot_results.py
-│       └── statistical_tests.py
+│       ├── statistical_tests.py
+│       └── aggregate_results.py  # Results aggregation
 │
-└── tests/                   # Test suite (77 tests)
+└── tests/                   # Test suite (126 tests)
 ```
 
 ---
@@ -137,10 +157,11 @@ HDL/
 
 | Metric | Value |
 |--------|-------|
-| Python files | 23 |
-| Lines of code | ~5,500 |
-| Test count | 77 |
+| Python files | 27 |
+| Lines of code | ~7,000 |
+| Test count | 126 |
 | Test pass rate | 100% |
+| Config files | 6 |
 | Documentation pages | 7 |
 
 ---
