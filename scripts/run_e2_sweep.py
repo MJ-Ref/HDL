@@ -247,11 +247,8 @@ class E2SweepRunner:
                     results.append(result)
 
             elif protocol == 'P5':
-                # Structured workspace (optional budget)
-                result = self.run_protocol(protocol)
-                results.append(result)
-                # Also test with budget
-                for max_bytes in [128, 256]:
+                # Structured workspace - test at same budget levels as P2
+                for max_bytes in self.config.budget_levels:
                     result = self.run_protocol(protocol, {'max_bytes': max_bytes})
                     results.append(result)
 
@@ -334,19 +331,36 @@ def main():
     parser.add_argument("--model", type=str, default="Qwen/Qwen2.5-3B-Instruct")
     parser.add_argument("--device", type=str, default="mps")
     parser.add_argument("--output", type=str, default="results")
+    parser.add_argument("--e2_min", action="store_true",
+                       help="E2-min mode: P2+P5 at 16B/64B/256B, 30 episodes each")
 
     args = parser.parse_args()
 
-    config = E2Config(
-        model_name=args.model,
-        difficulty=args.difficulty,
-        n_episodes=args.n_episodes,
-        device=args.device,
-    )
+    # E2-min mode: fast, high value baseline sweep
+    if args.e2_min:
+        print("=" * 60)
+        print("E2-MIN: Fast Text Baseline Sweep")
+        print("Protocols: P2, P5 at 16B, 64B, 256B")
+        print("=" * 60)
 
-    protocols = None
-    if args.protocols:
-        protocols = [p.strip() for p in args.protocols.split(",")]
+        config = E2Config(
+            model_name=args.model,
+            difficulty=args.difficulty,
+            n_episodes=30,  # 30 per condition
+            device=args.device,
+            budget_levels=[16, 64, 256],  # E2-min budgets
+        )
+        protocols = ['P2', 'P5']
+    else:
+        config = E2Config(
+            model_name=args.model,
+            difficulty=args.difficulty,
+            n_episodes=args.n_episodes,
+            device=args.device,
+        )
+        protocols = None
+        if args.protocols:
+            protocols = [p.strip() for p in args.protocols.split(",")]
 
     runner = E2SweepRunner(config, output_dir=args.output)
     runner.run_sweep(protocols=protocols)

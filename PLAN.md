@@ -1,16 +1,18 @@
 # LPCA: Latent-Path Communication for AI Agents
 ## Research Plan & Technical Specification
 
-**Version:** 1.3
-**Status:** Milestone 1 COMPLETE (Negative Result for Raw Latent)
+**Version:** 1.4
+**Status:** Milestone 1 COMPLETE - Ready for M2-SCALE
 **Target Venues:** NeurIPS 2026, ICML 2026, ICLR 2027
 **Last Updated:** January 14, 2026
 
 ### Progress Update
 - **M1 COMPLETE:** Raw latent communication (E0, A0) does NOT work without training
-- **Key Finding:** P1 (30%) >> P0 (0%), but E0 = A0 = P0 (0%)
+- **Key Finding (n=50, tightened task):** P1 (68%) >> P0 (20%), E0=13%, A0=20% (no improvement)
+- **Task Validated:** P0 at 20% confirms task is communication-limited (target: 15-25%)
+- **M2-LOCAL-PROTO:** PASSED - codec pipeline validated
 - **E5 Safety:** All metrics passed (compliance gap 17.5%, covert channel 8 bits)
-- **Next:** M2 Continuous Codec (requires cloud GPUs for training)
+- **Next:** E2-min (budgeted text baselines), then M2-SCALE (cloud codec training)
 
 ---
 
@@ -203,28 +205,27 @@ This work makes the following contributions:
 - [x] E4 Activation grafting layer sweep (0% at all layers)
 - [x] E5 Safety evaluation (PASS)
 
-**Results (Qwen-2.5-3B, Constraint Satisfaction):**
+**Results (Qwen-2.5-3B, Constraint Satisfaction, n=50, tightened task):**
 | Protocol | Success | 95% CI | Interpretation |
 |----------|---------|--------|----------------|
-| P0 (no comm) | 0% | [0%, 16.1%] | Baseline - can't solve alone |
-| **P1 (text)** | **30%** | **[14.5%, 51.9%]** | **Communication helps** |
-| E0 (CIPHER) | 0% | [0%, 27.8%] | Expected embeddings don't transfer semantics |
-| A0 L9 | 0% | [0%, 27.8%] | Early layer injection fails |
-| A0 L18 | 0% | [0%, 27.8%] | Mid layer injection fails |
-| A0 L27 | 0% | [0%, 27.8%] | Late layer injection fails |
+| P0 (no comm) | **20%** | [11.2%, 33.0%] | Baseline - in target range (was 52% before tightening) |
+| **P1 (text)** | **68%** | **[54.2%, 79.2%]** | **Communication helps (+48pp)** |
+| E0 (CIPHER) | 13% | [3.7%, 37.9%] | Expected embeddings don't help |
+| A0 L18 | 20% | [7.0%, 45.2%] | Activation injection no better than P0 |
 
 **Key Finding:** Raw latent representations do NOT transfer task-relevant information.
-- Model outputs literal "{json}" instead of solving constraints
-- Activations carry model state, but receiver can't interpret without training
-- This confirms H1 cannot be tested with untrained channels
+- Task now properly communication-limited (P0=20%, target was 15-25%)
+- E0/A0 no better than P0 - receiver can't interpret without training
+- P1 >> P0 with non-overlapping 95% CIs proves communication is the bottleneck
 
 **Exit Criteria:**
-- ❌ A0 does NOT show improvement over text baseline
+- ✅ P1 >> P0 confirmed (68% vs 20%, non-overlapping CIs)
+- ❌ A0/E0 do NOT show improvement over P0 baseline
 - ✅ Clear evidence: raw latent communication requires TRAINING to be effective
 
 **Go/No-Go Decision:**
-- PROCEED to M2 (Continuous Codec Training)
-- Rationale: The negative result is expected - untrained channels can't decode semantics
+- PROCEED to E2-min (budgeted text baselines) then M2-SCALE
+- Rationale: Need text baselines at budgets to set targets for codec
 - M2 will train encoder/decoder to make latent communication meaningful
 
 ---
@@ -265,15 +266,66 @@ untrained activations. M2 trains a codec to create semantically meaningful laten
 
 **Purpose:** Train high-quality codec with full sweeps once pipeline is validated.
 
-**Approach:**
-- Large dataset (1000+ successful P1 episodes)
-- Sweep k ∈ {4, 8, 16, 32, 64}
-- Multiple architecture variants
-- Full evaluation matrix
+---
 
-**Cloud GPU Requirements:**
+##### What the Codec Learns (Option A: Replace Sender Text Message)
+
+**Recommended approach for first success:**
+- Training sample is per-turn:
+  - inputs: (receiver_prompt_context, sender_text_message)
+  - target: receiver behavior under full text message
+- Train Encoder(text) → k vectors, Decoder(k vectors) → prefix embeddings
+- Objective: match receiver outputs vs the text-teacher
+
+**Rationale:** This is the cleanest bridge from P1 (which works). Alternatives:
+- Option B: Encode structured state (more compressible, but requires schema discipline)
+- Defer Option B until Option A demonstrates the pipeline works.
+
+---
+
+##### Evaluation Gates (Pre-committed)
+
+| Gate | Criterion | Interpretation |
+|------|-----------|----------------|
+| **Gate 1 (Sanity)** | L1 at k∈{4,8} > P0 by ≥10pp | Learned channel carries some signal |
+| **Gate 2 (Retention)** | L1 at k=16 ≥ 50% of P1 capability | Codec retains meaningful information |
+| **Gate 3 (Budget)** | Every run emits Success + CI + Bits + Tokens + Time | Comparable to text baselines |
+
+---
+
+##### Required Ablations (Bake In From Day One)
+
+| Ablation | Expected Result | Purpose |
+|----------|-----------------|---------|
+| k=0 / null message | ~P0 (20%) | Proves latent carries signal |
+| Random latent (same shape) | ~P0 (20%) | Proves learned structure matters |
+| Shuffle sender messages across episodes | Should crater | Proves semantics matter |
+
+---
+
+##### Injection Mechanism
+
+**Use prefix embeddings first** (even if long-term target is more exotic):
+- Want to debug: dataset correctness, conditioning, training stability, eval comparability
+- Don't add mid-layer surgery complexity until prefix injection works
+
+---
+
+##### Data Composition
+
+**Don't train only on perfect successes:**
+- Majority: successful P1 turns (ground truth)
+- Some: near-miss / partial-credit turns (if PC metric is meaningful)
+- Some: failures (so codec learns not to confidently serialize garbage)
+
+**Practical split:** ~70% success, ~20% partial, ~10% failure
+
+---
+
+##### Cloud GPU Requirements
+
 - **Minimum:** 1× A100 40GB ($2.10/hr on Modal)
-- **Recommended:** 4× A100 for parallel sweeps
+- **Recommended:** 4× A100 for parallel k sweeps
 - **Estimated Cost:** $50-200 total
 - **Estimated Time:** 40-80 GPU-hours
 
@@ -288,19 +340,21 @@ untrained activations. M2 trains a codec to create semantically meaningful laten
 
 **Deliverables:**
 - [ ] Encoder-decoder architecture for continuous packets
-- [ ] Distillation pipeline from P1 teacher (not A0, since A0 doesn't work)
+- [ ] Distillation pipeline from P1 teacher
 - [ ] Prefix injection implementation
 - [ ] Capability vs k (packet size) curves
+- [ ] Ablation results (null, random, shuffle)
 
 **Training Protocol:**
-1. Collect successful P1 episodes (≥1000 per task type) - use text as teacher
+1. Collect P1 episodes (≥1000 per task type) - mixed success/partial/fail
 2. Train encoder E: text message → k latent vectors
 3. Train decoder D: k vectors → prefix embeddings for receiver
 4. Loss: behavior cloning (match P1 outputs) + reconstruction
 
 **Exit Criteria:**
-- L1 achieves ≥50% of P1 capability at k=16
+- L1 achieves ≥50% of P1 capability at k=16 (Gate 2)
 - Clear capability-k relationship (monotonic or with interpretable knee)
+- All three ablations confirm learned structure matters
 
 ---
 

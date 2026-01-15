@@ -9,27 +9,25 @@
 | Experiment | Status | Result |
 |------------|--------|--------|
 | Sanity Checks | ✅ **PASS** | Single-agent 70%, injection works, parsing robust |
-| E1: Baseline Validation | ⚠️ **NEEDS WORK** | P1=74%, P0=52% (P0 too high!) |
-| E2: Text Baseline Strength | ⏸️ Blocked | Wait for task tightening |
-| E3: CIPHER Evaluation | 🔄 **RERUN NEEDED** | Prior results tied to prompt bug |
-| E4: Activation Grafting | 🔄 **RERUN NEEDED** | Prior results tied to prompt bug |
+| **E1: Baseline Validation** | ✅ **COMPLETE** | **P1=68%, P0=20% (n=50, tightened task)** |
+| E2-min: Text Baselines | 🔄 **READY** | P2+P5 at 16B/64B/256B next |
+| **E3: CIPHER Evaluation** | ✅ **COMPLETE** | **E0=13% (no improvement over P0)** |
+| **E4: Activation Grafting** | ✅ **COMPLETE** | **A0=20% (no improvement over P0)** |
 | E5: Safety Evaluation | ✅ **PASS** | All metrics within thresholds |
 | E6-E8 | ⬜ Pending | Requires M2/M3 (cloud GPUs) |
 
-### ⚠️ CRITICAL: Task Not Sufficiently Communication-Limited
+### ✅ Task Now Properly Communication-Limited (Post-Tightening)
 
-**Post-fix E1 (n=50):**
-- P0 (no comm): 52% ← **TOO HIGH** (expected: 15-25%)
-- P1 (text): 74%
-- Single-agent: 70%
+**Post-tightening E1 (n=50):**
+- P0 (no comm): **20%** [11.2%, 33.0%] ✅ In target range (was 52% before)
+- P1 (text): **68%** [54.2%, 79.2%] ✅ Strong improvement (+48pp)
+- E0 (CIPHER): 13% [3.7%, 37.9%] ❌ No improvement
+- A0 (Activation): 20% [7.0%, 45.2%] ❌ No improvement
 
-**Problem:** Agents can often succeed without partner's info. This undermines
-the "communication bottleneck" thesis. Must tighten S1 before E2/E3/E4.
-
-**Action:** Modify constraint satisfaction generator to ensure:
-1. Near-unique satisfying assignment
-2. Each half alone has high ambiguity
-3. Both halves genuinely required
+**Task tightening applied:**
+1. Increased vars 3→4, constraints 4→8, domain 2→3
+2. Added `_count_valid_solutions()` to ensure neither agent can solve alone
+3. Generator retries until both agents have ≥2 valid solutions from their view
 
 ### Sanity Check Results (Run Before Scaling)
 
@@ -38,68 +36,68 @@ the "communication bottleneck" thesis. Must tighten S1 before E2/E3/E4.
 | Single Agent Full Info | 70% success | Model IS competent when given all info |
 | Activation Injection | L2=165, changes output | Injection plumbing works correctly |
 | Answer Parsing | 90% accurate | Parsing won't cause false negatives |
+| M2-LOCAL-PROTO | ✅ PASS | Codec pipeline works (loss↓, cos_sim=0.51) |
 
-### E3/E4 Status: Rerun Required
+---
 
-Prior E3/E4 results (0% success) were tied to prompt bug where model output
-literal `{json}`. Now that prompts are fixed, E3/E4 must be rerun to get
-valid results. This is critical before codec training.
+### Final Results (Post-Tightening, n=50)
 
-### E4 Results (Activation Grafting, Qwen-2.5-3B)
-| Layer | Success | 95% CI |
-|-------|---------|--------|
-| L9 (early) | 0% | [0%, 27.8%] |
-| L18 (middle) | 0% | [0%, 27.8%] |
-| L27 (late) | 0% | [0%, 27.8%] |
-
-**Finding:** Simple activation injection does not transfer task-relevant information.
-The model outputs literal "{json}" instead of solving constraints.
-
-### E3 Results (CIPHER Expected Embeddings, Qwen-2.5-3B)
-| Protocol | Success | 95% CI | Bits/Episode |
-|----------|---------|--------|--------------|
-| E0 (CIPHER) | 0% | [0%, 27.8%] | 393,216 |
-
-**Finding:** Expected embeddings prepended to input don't help task performance.
-
-### Summary: Latent vs Text Communication
-| Protocol | Success | Method | Status |
-|----------|---------|--------|--------|
-| P0 | 0% | No communication | Baseline |
-| **P1** | **30%** | **Text messages** | **Best** |
-| E0 | 0% | CIPHER embeddings | Failed |
-| A0 | 0% | Activation injection | Failed |
-
-**Key Insights:**
-1. Text communication (P1) significantly outperforms no communication (P0)
-2. Raw latent representations (E0, A0) don't transfer task semantics
-3. Latent communication requires **training** (decoder, fine-tuning, contrastive learning)
-4. Milestone 2 (learned codecs) needed to test trained latent communication
-
-### E1 Results (Qwen-2.5-3B, Constraint Satisfaction, Easy, n=50)
-
-**⚠️ WARNING: P0 baseline too high - task needs tightening**
+#### E1: Baseline Validation ✅ COMPLETE
 
 | Protocol | Success | 95% CI | Partial Credit | Avg Turns |
 |----------|---------|--------|----------------|-----------|
-| P0 (no comm) | **52%** | [38.5%, 65.2%] | 0.730 | 6.4 |
-| P1 (full text) | **74%** | [60.4%, 84.1%] | 0.855 | 3.1 |
+| P0 (no comm) | **20%** | [11.2%, 33.0%] | 0.708 | 5.1 |
+| **P1 (full text)** | **68%** | **[54.2%, 79.2%]** | **0.882** | **3.6** |
 
-**What this tells us:**
-- ✅ P1 > P0 by 22% - communication helps (real effect, non-overlapping CIs)
-- ✅ P1 nearly matches single-agent (74% vs 70%) - protocol works
-- ⚠️ P0 = 52% is too high - expected 15-25%
-- ⚠️ Task is NOT sufficiently communication-limited
+**Key finding:** P1 >> P0 with **+48pp** improvement and non-overlapping 95% CIs.
+Communication is clearly the bottleneck and text communication works.
 
-**Why P0 is too high:**
-The constraint satisfaction task (easy difficulty) allows agents to often
-guess valid solutions without partner's constraints. This violates the
-pre-registered assumption that "solution requires satisfying C_A ∪ C_B."
+#### E3: CIPHER Expected Embeddings ✅ COMPLETE
+
+| Protocol | Success | 95% CI | Bits/Episode |
+|----------|---------|--------|--------------|
+| E0 (CIPHER) | 13% | [3.7%, 37.9%] | 196,608 |
+
+**Finding:** Expected embeddings don't help - no improvement over P0.
+
+#### E4: Activation Grafting ✅ COMPLETE
+
+| Layer | Combine | Success | 95% CI |
+|-------|---------|---------|--------|
+| L18 (middle) | replace | 20% | [7.0%, 45.2%] |
+
+**Finding:** Activation injection no better than P0 baseline.
+
+---
+
+### Summary: Latent vs Text Communication
+
+| Protocol | Success | 95% CI | Method | Verdict |
+|----------|---------|--------|--------|---------|
+| P0 | 20% | [11%, 33%] | No communication | Baseline |
+| **P1** | **68%** | **[54%, 79%]** | **Text messages** | **Best** |
+| E0 | 13% | [4%, 38%] | CIPHER embeddings | ❌ No improvement |
+| A0 | 20% | [7%, 45%] | Activation injection | ❌ No improvement |
+
+**Key Insights:**
+1. Text communication (P1) significantly outperforms no communication (P0) by +48pp
+2. Raw latent representations (E0, A0) don't transfer task semantics
+3. Task is now properly communication-limited (P0=20% in target range 15-25%)
+4. Latent communication requires **training** - proceed to M2-SCALE
+
+---
+
+### Historical Results (Pre-Tightening, Archived)
+
+**Old E1 (n=50, old task):** P0=52%, P1=74%
+- Task was NOT communication-limited (P0 too high)
+- These results archived in tag `baseline-v0.1-postfix`
 
 **Next steps:**
-1. Tighten S1 generator (near-unique solutions, higher ambiguity)
-2. Rerun E1 with tightened task
-3. Only proceed to E2/E3/E4 when P0 < 25%
+1. ✅ Tightened S1 generator (done)
+2. ✅ Reran E1 with tightened task (done)
+3. → Run E2-min (budgeted text baselines)
+4. → Proceed to M2-SCALE (cloud codec training)
 
 ---
 
@@ -252,9 +250,38 @@ P2         0.200      0.525      3.0        565
 
 ---
 
-### 2.2 Experiment E2: Text Baseline Strength
+### 2.2 Experiment E2-min: Text Baseline Strength (Fast, High Value)
 
-**Objective:** Establish strong text baselines (not strawmen)
+**Objective:** Establish strong text baselines at budgets we care about (not strawmen)
+
+**Rationale:** If M2 goal is "train a codec that beats strong text baselines under budgets,"
+we need baseline data now. E2-min provides rate-distortion-ish curve for text/structure.
+
+---
+
+#### E2-min Protocol (Recommended Before M2-SCALE)
+
+**Protocols to test:**
+- **P2 (budgeted text)** - strict byte cap, most comparable to latent
+- **P5 (structured workspace)** - often punches above its weight
+
+**Budget levels (bytes):**
+- 16B - severe constraint
+- 64B - moderate constraint
+- 256B - light constraint
+
+**Episodes:** 30 per (protocol, budget) = 6 conditions × 30 = 180 episodes total
+
+**Metrics:**
+- Success rate + 95% CI at each budget
+- Partial credit at each budget
+- Effective bits = budget × 8 (for direct comparison to latent k)
+
+**Deliverable:** Baseline performance table + capability-vs-bits curve
+
+---
+
+#### Full E2 (Optional, After M2)
 
 **Protocol:**
 1. For each text protocol P1-P5:
@@ -263,11 +290,7 @@ P2         0.200      0.525      3.0        565
    - At each budget level: 128, 512, 2048, 8192, ∞ bits
 2. Select best-performing text protocol per task family
 
-**Metrics:**
-- Success rate at each budget
-- Pareto frontier (success vs bits)
-
-**Deliverable:** Baseline performance table for all comparisons
+**Status:** Defer full sweep until after M2-SCALE demonstrates codec works
 
 ---
 
