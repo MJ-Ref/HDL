@@ -1,0 +1,72 @@
+# M2-SCALE Frozen Evaluation Settings
+# DO NOT MODIFY after training begins
+# Tag: tightened-v0.2
+
+# Model
+model_name: "Qwen/Qwen2.5-3B-Instruct"
+model_revision: "main"  # Pin to specific commit if needed
+
+# Generation settings (FROZEN)
+generation:
+  temperature: 0.3
+  top_p: 1.0
+  do_sample: true
+  max_new_tokens: 512
+
+# Evaluation seeds (FROZEN)
+evaluation:
+  # Training data uses seeds 42-541 (500 episodes)
+  train_seeds: [42, 541]  # range: start, end (exclusive)
+  # Validation uses seeds 1000-1099 (100 episodes)
+  val_seeds: [1000, 1099]
+  # Test uses FRESH seeds 2000-2099 (100 episodes) - never seen during training
+  test_seeds: [2000, 2099]
+
+# Task settings (FROZEN)
+task:
+  type: "constraint_satisfaction"
+  difficulty: "easy"
+  # Tightened params (from split_synthetic.py):
+  n_variables: 4
+  n_constraints: 8
+  domain_size: 3
+
+# Baseline targets (FROZEN from E1/E2-min)
+baselines:
+  P0: 0.20   # [0.112, 0.330]
+  P1: 0.68   # [0.542, 0.792]
+  P5_16B: 0.567  # [0.392, 0.726] at ~43 bits
+  P5_64B: 0.600  # [0.423, 0.754] at ~214 bits
+  P5_256B: 0.667 # [0.488, 0.808] at ~2132 bits
+
+# M2 Gates (FROZEN)
+gates:
+  gate1_sanity:
+    k_values: [4, 8]
+    criterion: "L1 > P0 + 0.10"  # Must beat P0 by 10pp
+    threshold: 0.30  # 20% P0 + 10pp
+  gate2_retention:
+    k_value: 16
+    criterion: "L1 >= 0.50 * P1"
+    threshold: 0.34  # 50% of 68%
+
+# Ablations (FROZEN - must run with every evaluation)
+ablations:
+  null_message:
+    description: "k=0 or no latent injection"
+    expected: "~P0 (0.20)"
+  random_latent:
+    description: "Random vectors same shape as learned"
+    expected: "~P0 (0.20)"
+  shuffle_messages:
+    description: "Shuffle sender messages across episodes"
+    expected: "Should crater (<P0)"
+
+# Codec k sweep values
+codec_sweep:
+  k_values: [4, 8, 16, 32, 64]
+  # Mapping to approximate bits (k * d_model, but compressed)
+  # Actual bits depend on representation
+
+# Created: 2026-01-14
+# Commit: tightened-v0.2
