@@ -1,8 +1,8 @@
 # LPCA Experimental Protocols
 
-**Version:** 1.1
+**Version:** 1.2
 **Status:** Active Development
-**Last Updated:** January 14, 2026
+**Last Updated:** January 15, 2026
 
 ## Progress Summary
 
@@ -14,7 +14,10 @@
 | **E3: CIPHER Evaluation** | ✅ **COMPLETE** | **E0=13% (no improvement over P0)** |
 | **E4: Activation Grafting** | ✅ **COMPLETE** | **A0=20% (no improvement over P0)** |
 | E5: Safety Evaluation | ✅ **PASS** | All metrics within thresholds |
-| E6-E8 | ⬜ Pending | Requires M2/M3 (cloud GPUs) |
+| **M2-SCALE Gate 1** | ⚠️ **INVALID** | Plumbing proof FAIL: L1=0% vs P1=70% |
+| **M2 Plumbing Proof** | ❌ **FAIL** | Training objective wrong (MSE vs KL distillation) |
+| M2-SCALE Gate 2 | ⬜ Blocked | Blocked on training fix + Gate 1 |
+| E6-E8 | ⬜ Pending | Requires M3 (discrete codec) |
 
 ### ✅ Task Now Properly Communication-Limited (Post-Tightening)
 
@@ -96,8 +99,183 @@ Communication is clearly the bottleneck and text communication works.
 **Next steps:**
 1. ✅ Tightened S1 generator (done)
 2. ✅ Reran E1 with tightened task (done)
-3. → Run E2-min (budgeted text baselines)
-4. → Proceed to M2-SCALE (cloud codec training)
+3. ✅ Run E2-min (budgeted text baselines) (done)
+4. ⚠️ M2-SCALE Gate 1 (INVALID) - critical bugs found, rerun required
+5. → Fix critical bugs (placeholder, text leak, shuffle)
+6. → Run plumbing proof
+7. → Clean Gate 1 rerun
+8. → Gate 2 (k=16)
+
+---
+
+### M2-SCALE: Continuous Codec Training ⚠️ Gate 1 INVALID
+
+**Platform:** Modal.com (A100 40GB GPU)
+**Date:** January 15, 2026
+
+#### Gate 1 Results - ⚠️ INVALID
+
+| Config | Final Loss | Normal | Null Msg | Random Latent | Gate 1 |
+|--------|-----------|--------|----------|---------------|--------|
+| k=4 | 0.097 | 34.0% | 30.0% | 38.0% | ⚠️ INVALID |
+| k=8 | 0.111 | 38.0% | 36.0% | 42.0% | ⚠️ INVALID |
+
+**Why Invalid:** Multiple critical bugs make results unreliable:
+
+1. **Placeholder fallback (P0 severity):** `_run_codec_episode()` returns
+   `random.random() < 0.3` if env import fails - can fake ~30% results
+2. **Text leakage (P1 severity):** Agent B always sees `message_A` text,
+   so "normal" tests text communication, not the codec
+3. **Missing shuffle (P1 severity):** Required ablation not implemented
+4. **Injection unused:** `prefix_embedding` computed but never injected
+
+**Logs:** `logs/m2_gate1/` (archived, marked invalid)
+
+---
+
+#### Validity Checklist (Required Per Run)
+
+| Check | Description | Pass Criterion |
+|-------|-------------|----------------|
+| **Env Import** | Real env loaded | No "LPCA not available" in logs |
+| **No Text Leak** | `message_A` not in `prompt_B` | Leak test assertion passes |
+| **Injection Active** | `prefix_embedding` used | Plumbing proof shows effect |
+| **Shuffle Craters** | Shuffle ablation < P0 | CI_high(shuffle) < CI_low(P0) |
+| **Null ≈ P0** | Null CI overlaps P0 CI | Statistical test |
+| **Random ≈ P0** | Random CI overlaps P0 CI | Statistical test |
+
+**Invalidation Policy:** If ANY check fails, results labeled INVALID.
+
+---
+
+#### Critical Fixes Required
+
+**Fix 1: Remove placeholder (Priority 0)**
+```python
+# OLD (dangerous - can fake results):
+except ImportError:
+    print("Warning: LPCA not available, using placeholder")
+    return random.random() < 0.3
+
+# NEW (fail fast):
+except ImportError as e:
+    raise RuntimeError(f"LPCA env required for evaluation: {e}")
+```
+
+**Fix 2: Eliminate text leakage (Priority 1)**
+```python
+def build_agent_b_prompt(obs_B: str, protocol: str, latent_desc: str = None) -> str:
+    """Build Agent B prompt. NEVER includes message_A for latent protocols."""
+    if protocol == 'P1':  # Text baseline
+        return f"...MESSAGE from partner: {message_A}..."
+    elif protocol in ['L1', 'null', 'random', 'shuffle']:
+        # Latent condition: describe injection, don't leak text
+        return f"...Your partner sent encoded information (injected as prefix)..."
+
+# Add leak test:
+if protocol != 'P1':
+    assert message_A not in prompt_B, f"Text leak detected in {protocol}!"
+```
+
+**Fix 3: Implement shuffle ablation (Priority 1)**
+```python
+if ablation == 'shuffle':
+    # Rotate within evaluated seed list (e.g., seeds 2000-2099)
+    seed_list = list(range(test_start, test_start + n_episodes))
+    idx = seed_list.index(seed)
+    shuffled_idx = (idx + 17) % len(seed_list)  # Rotate by 17 in index space
+    shuffled_seed = seed_list[shuffled_idx]
+    message_A = cached_messages[shuffled_seed]
+# Expected: CI_high(shuffle) < CI_low(P0) (proves semantic dependence)
+```
+
+**Fix 4: CI-aware gating (Priority 2)**
+```python
+from lpca.core.metrics import MetricsCalculator
+
+calc = MetricsCalculator()
+ci_low, ci_high = calc.wilson_ci(successes, n_episodes)
+gate_pass = ci_low >= threshold  # Not point estimate
+```
+
+**Fix 5: Paired comparisons (Priority 2)**
+```python
+# Cache message_A per seed for fair comparison
+message_cache = {}
+for seed in range(start, end):
+    if seed not in message_cache:
+        message_cache[seed] = generate_message_a(seed)
+    message_A = message_cache[seed]  # Reuse across conditions
+```
+
+**Fix 6: KV cache for generation (Priority 1)**
+```python
+# OLD (context lost after first token):
+outputs = model(current_ids)  # Bug: loses injected prefix
+
+# NEW (maintain context via past_key_values):
+outputs_B = model(
+    inputs_embeds=combined_embeds,
+    attention_mask=combined_mask,
+    use_cache=True,
+)
+past_key_values = outputs_B.past_key_values
+
+for _ in range(max_tokens - 1):
+    outputs = model(
+        input_ids=current_ids,
+        attention_mask=extended_mask,
+        past_key_values=past_key_values,
+        use_cache=True,
+    )
+    past_key_values = outputs.past_key_values
+    # ... sample next token
+```
+
+---
+
+#### Gate 1 Rerun Protocol
+
+**Phase 1: Plumbing Proof (before GPU spend) — ❌ FAILED (January 15, 2026)**
+
+| Condition | Text Present | Injection On | Expected | Actual |
+|-----------|--------------|--------------|----------|--------|
+| P1 Baseline | Yes | No | ~68% | **70.0%** ✓ |
+| L1 Injection | No | Yes | ~68% (match P1) | **0.0%** ❌ |
+
+**Root Cause:** Training objective is MSE reconstruction loss (geometric similarity),
+not semantic usefulness as a soft prefix. The codec is an autoencoder, not a communication channel.
+
+**Decision:** Fix training objective before proceeding.
+
+**Phase 0: Fix Training Objective (BLOCKER)**
+```python
+# WRONG: MSE reconstruction doesn't teach communication
+loss = F.mse_loss(reconstructed, pooled)
+
+# CORRECT: KL distillation from text-teacher to prefix-student
+teacher_logits = model(text_prompt_B)  # Agent B with message
+student_logits = model(inputs_embeds=prefix_prompt_B)  # Agent B with prefix
+loss = F.kl_div(student_logits, teacher_logits)
+```
+
+**Phase 2: Clean Gate 1 Run** (blocked on Phase 0)
+
+| Parameter | Value |
+|-----------|-------|
+| Episodes per condition | 100 (tighter CIs) |
+| k values | 4, 8 |
+| Ablations | null, random, shuffle |
+| Gate threshold | CI_low ≥ 0.30 |
+| Ablation threshold | CI overlaps P0 CI |
+
+**Phase 3: Gate 2 (only after Phase 2 passes)**
+
+| Parameter | Value |
+|-----------|-------|
+| k value | 16 |
+| Episodes | 100 |
+| Gate threshold | CI_low ≥ 0.34 (50% of P1) |
 
 ---
 

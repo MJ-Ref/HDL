@@ -6,7 +6,6 @@ Usage:
     modal run modal/upload_data.py --data-path data/m2_train.jsonl
 """
 
-import argparse
 import modal
 
 app = modal.App("m2-data-upload")
@@ -16,20 +15,16 @@ volume = modal.Volume.from_name("m2-training-data", create_if_missing=True)
 
 
 @app.function(volumes={"/data": volume})
-def upload_file(local_path: str, remote_name: str):
-    """Upload a file to the Modal volume."""
-    import shutil
+def save_to_volume(content: bytes, remote_name: str):
+    """Save content to the Modal volume."""
     from pathlib import Path
-
-    local_file = Path(local_path)
-    if not local_file.exists():
-        raise FileNotFoundError(f"File not found: {local_path}")
 
     remote_path = Path("/data") / remote_name
     remote_path.parent.mkdir(parents=True, exist_ok=True)
 
-    # Copy file to volume
-    shutil.copy(local_path, remote_path)
+    # Write content to volume
+    with open(remote_path, 'wb') as f:
+        f.write(content)
 
     # Verify
     size = remote_path.stat().st_size
@@ -54,8 +49,14 @@ def main(data_path: str = "data/m2_train.jsonl"):
         print(f"Error: File not found: {data_path}")
         return
 
+    print(f"Reading local file: {local_file}")
+    content = local_file.read_bytes()
+    print(f"File size: {len(content):,} bytes")
+
     remote_name = local_file.name
-    result = upload_file.remote(str(local_file.absolute()), remote_name)
+    print(f"Uploading to Modal volume as: {remote_name}")
+
+    result = save_to_volume.remote(content, remote_name)
 
     print(f"\nUpload complete!")
     print(f"Remote path: {result['path']}")

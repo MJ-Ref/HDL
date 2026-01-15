@@ -1,7 +1,7 @@
 # LPCA Project Status
 
-**Last Updated:** January 14, 2026
-**Current Phase:** Milestone 1 COMPLETE + E2-min COMPLETE - Ready for M2-SCALE
+**Last Updated:** January 15, 2026
+**Current Phase:** M2-SCALE Gate 1 INVALID - Plumbing Proof FAIL, Training Objective Wrong
 
 ---
 
@@ -9,11 +9,25 @@
 
 The LPCA (Latent-Path Communication for AI Agents) research project has completed **Milestone 0** (Foundation), **Milestone 1** (Latent Baselines), and **E2-min** (Budgeted Text Baselines).
 
+**M2-SCALE Gate 1 results are INVALID** due to critical bugs identified during review.
+
 **Key findings (n=50, tightened task):**
 - **P1 (68%) >> P0 (20%)** - Text communication adds **+48pp** (non-overlapping 95% CIs)
 - **E0 CIPHER = 13%**, **A0 Activation = 20%** - Raw latent channels don't help without training
 - **P5 (structured) dominates P2 (raw text)** at all budgets
 - **P5_16B = 56.7% at ~43 bits** - Target for codec at k=4
+
+**M2-SCALE Gate 1 Results (January 15, 2026) - ⚠️ INVALID:**
+| Config | Final Loss | Success Rate | Gate 1 Status |
+|--------|-----------|--------------|---------------|
+| k=4 | 0.097 | 34.0% | ⚠️ **INVALID** |
+| k=8 | 0.111 | 38.0% | ⚠️ **INVALID** |
+
+**Why Invalid:**
+1. Latent vectors computed but never injected (Agent B always sees text)
+2. Placeholder fallback can return ~30% success even if env fails to load
+3. Missing shuffle ablation (required by spec)
+4. Point-estimate gating with n=50 is too noisy
 
 **Codec Targets (from E2-min):**
 | Target | Success | Bits | Codec k |
@@ -22,7 +36,7 @@ The LPCA (Latent-Path Communication for AI Agents) research project has complete
 | P5_64B | 60.0% | ~214 | k=16 (~128 bits) |
 | P5_256B | 66.7% | ~2132 | k=64 (~512 bits) |
 
-Safety evaluation (E5) passed all metrics. **Next step: M2-SCALE (cloud codec training).**
+Safety evaluation (E5) passed all metrics. **Next step: Fix critical bugs, rerun Gate 1 with validity checks.**
 
 ---
 
@@ -98,7 +112,7 @@ Safety evaluation (E5) passed all metrics. **Next step: M2-SCALE (cloud codec tr
 
 **Why M2 is needed:** M1 showed that raw latent channels don't work. Training is required to create semantically meaningful latent packets.
 
-#### M2-LOCAL-PROTO (Can Run Locally) ✅ READY
+#### M2-LOCAL-PROTO (Can Run Locally) ✅ COMPLETE
 
 | Approach | Details |
 |----------|---------|
@@ -107,21 +121,54 @@ Safety evaluation (E5) passed all metrics. **Next step: M2-SCALE (cloud codec tr
 | Dataset | 100-500 P1 episodes |
 | Time | ~10-30 min per run |
 
-**Purpose:** Validate pipeline before cloud spend.
+**Purpose:** Validate pipeline before cloud spend. ✅ PASSED
 
-#### M2-SCALE (Requires Cloud GPUs) ⏳ PENDING
+#### M2-SCALE Gate 1 ⚠️ INVALID
 
-| Resource | Minimum | Recommended |
-|----------|---------|-------------|
-| GPU | 1× A100 40GB | 4× A100 80GB |
-| Time | 40-80 GPU-hours | - |
-| Cost | $50-100 | $100-200 |
+| Config | Final Loss | Normal | Null Msg | Random Latent | Gate 1 |
+|--------|-----------|--------|----------|---------------|--------|
+| k=4 | 0.097 | 34.0% | 30.0% | 38.0% | ⚠️ INVALID |
+| k=8 | 0.111 | 38.0% | 36.0% | 42.0% | ⚠️ INVALID |
 
-**Recommended Provider: Modal.com** ⭐
-- $30/month free credits (~14 hours A100)
-- $10,000 academic research grants available
-- Serverless - only pay for compute
-- Python-native API
+**Training completed but evaluation invalid.** Logs: `logs/m2_gate1/`
+
+**Plumbing Proof Results (January 15, 2026) - ❌ FAIL:**
+
+| Condition | Success Rate | Expected |
+|-----------|-------------|----------|
+| P1 Baseline (text, no injection) | **70.0%** | ~68% ✓ |
+| L1 Injection (no text, injection on) | **0.0%** | Should match P1 |
+| P0 Reference | ~20% | ~20% |
+
+**Root Cause: Wrong Training Objective**
+
+The codec training uses MSE reconstruction loss, which trains geometric similarity
+instead of semantic usefulness. The codec is an autoencoder, not a communication channel.
+
+| Issue | Severity | Status |
+|-------|----------|--------|
+| Placeholder fallback | P0 | ✅ Fixed |
+| Text leakage | P1 | ✅ Fixed |
+| Missing shuffle | P1 | ✅ Fixed |
+| KV cache generation | P1 | ✅ Fixed |
+| Point-estimate gating | P2 | ✅ Fixed |
+| **Training objective** | **P0** | ❌ **BLOCKER** - Need distillation-based training |
+
+**Required Fix:** Replace MSE reconstruction loss with KL distillation:
+```python
+# Train codec so receiver with prefix matches receiver with text
+teacher_logits = model(text_prompt)  # Agent B sees message
+student_logits = model(prefix_prompt)  # Agent B sees injected prefix
+loss = F.kl_div(student_logits, teacher_logits)
+```
+
+#### M2-SCALE Gate 2 ⏳ BLOCKED
+
+| Gate | Criterion | Status |
+|------|-----------|--------|
+| Gate 2 | L1@k=16 ≥ 50% of P1 (≥34%) | Blocked on Gate 1 rerun |
+
+**Next:** Fix training objective (KL distillation) → Retrain codec → Plumbing proof → Gate 1 rerun
 
 ---
 
@@ -287,33 +334,50 @@ HDL/
 
 ### ✅ COMPLETED
 1. ~~Install torch/transformers~~ - Done (PyTorch 2.9.1, MPS support)
-2. ~~Run E1 baseline validation~~ - Done (P1=30% >> P0=0%)
-3. ~~Run E3 CIPHER evaluation~~ - Done (E0=0%, negative result)
-4. ~~Run E4 layer sweep~~ - Done (A0=0% at L9, L18, L27)
+2. ~~Run E1 baseline validation~~ - Done (P1=68% >> P0=20%)
+3. ~~Run E3 CIPHER evaluation~~ - Done (E0=13%, negative result)
+4. ~~Run E4 layer sweep~~ - Done (A0=20%, negative result)
 5. ~~Run E5 safety evaluation~~ - Done (All metrics PASS)
-6. ~~Fix prompt/parsing issues~~ - Done (removed {json} placeholder, added fallback)
-7. ~~Add sanity checks~~ - Done (single-agent, injection, parsing)
-8. ~~Run sanity checks~~ - Done (all passed)
+6. ~~Fix prompt/parsing issues~~ - Done
+7. ~~Run E2-min (budgeted text)~~ - Done (P5_16B=56.7% at 43 bits)
+8. ~~M2-LOCAL-PROTO~~ - Done (pipeline validated)
+9. ⚠️ M2-SCALE Gate 1 (k=4, k=8) - **INVALID** (critical bugs, rerun required)
+
+### ✅ FIXES IMPLEMENTED
+10. ~~Fix critical bugs before Gate 1 rerun~~ - **All eval fixes implemented:**
+    - ✅ P0: Fail-fast on ImportError (no placeholder fallback)
+    - ✅ P1: Agent B prompt excludes `message_A` for latent conditions
+    - ✅ P1: Shuffle ablation implemented (rotate by 17 in seed_list index)
+    - ✅ P1: KV cache generation (past_key_values maintains injected context)
+    - ✅ P2: Wilson CI-aware gating (`CI_low >= threshold`)
+    - ✅ P2: Paired comparisons (message_cache per seed)
+
+### ❌ PLUMBING PROOF FAILED
+11. ~~Run plumbing proof to verify injection works~~ - **FAIL: L1=0% vs P1=70%**
+    - Root cause: Training objective is MSE reconstruction, not semantic communication
+    - Codec learns geometric similarity, not usefulness as soft prefix
 
 ### 🔄 IN PROGRESS
-9. **Run E1 with 50 episodes** - Validating fixes with larger sample
+12. **Fix training objective (distillation-based)**
+    - Replace MSE loss with KL distillation from text-teacher to prefix-student
+    - Train codec so Agent B with prefix behaves like Agent B with text
 
-### 📋 NEXT: Local Tight Loops (Before Cloud)
+### 📋 Gate 1 Rerun Protocol
 
-**Step 1: Run E2 (Text Baseline Sweep)**
-- Sweep P1-P5 protocols
-- Establish strong teacher baseline
-- Get capability-vs-bits curve
+**Phase 1: Plumbing Proof (10 episodes each)**
+1. Text present + injection off → expect ~P1 (68%)
+2. Text absent + injection on → measure performance
+3. Decision: If (2) ≈ (1) AND no-leak passes → injection works
+   If (2) collapses to ~P0 → injection not working → fix before proceeding
 
-**Step 2: M2-LOCAL-PROTO**
-- Validate codec training pipeline locally
-- Freeze base model, train small encoder/decoder
-- Confirm loss decreases, generation not broken
+**Phase 2: Clean Gate 1 Run (n=100)**
+1. Verify all validity checks pass
+2. Run k=4, k=8 with all ablations (null, random, shuffle)
+3. Gate passes only if `CI_low >= 0.30` AND ablations pass
 
-**Step 3: Scale to Cloud (When Ready)**
-- Use Modal.com ($30/mo free credits)
-- Collect 1000+ P1 episodes
-- Full k-sweep for codec training
+**Phase 3: Gate 2 (only after Phase 2)**
+1. Run k=16, n=100
+2. Gate passes if `CI_low >= 0.34`
 
 ---
 
