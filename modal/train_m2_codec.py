@@ -577,6 +577,9 @@ def check_gates(results: Dict[str, Any], config: M2Config) -> Dict[str, bool]:
 if MODAL_AVAILABLE:
     app = modal.App("m2-codec-training")
 
+    # Persistent volume for training data
+    volume = modal.Volume.from_name("m2-training-data", create_if_missing=True)
+
     # Define the image with dependencies
     image = (
         modal.Image.debian_slim(python_version="3.10")
@@ -592,8 +595,9 @@ if MODAL_AVAILABLE:
         gpu="A100",
         timeout=3600,
         image=image,
+        volumes={"/data": volume},
     )
-    def train_on_modal(k: int, epochs: int, data_path: str) -> Dict:
+    def train_on_modal(k: int, epochs: int, data_path: str = "/data/m2_train.jsonl") -> Dict:
         """Train codec on Modal A100."""
         config = M2Config(
             k_vectors=k,
