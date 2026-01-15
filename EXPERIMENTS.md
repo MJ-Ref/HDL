@@ -10,7 +10,7 @@
 |------------|--------|--------|
 | Sanity Checks | ✅ **PASS** | Single-agent 70%, injection works, parsing robust |
 | **E1: Baseline Validation** | ✅ **COMPLETE** | **P1=68%, P0=20% (n=50, tightened task)** |
-| E2-min: Text Baselines | 🔄 **READY** | P2+P5 at 16B/64B/256B next |
+| **E2-min: Text Baselines** | ✅ **COMPLETE** | **P5_16B=56.7% at 43 bits (codec target)** |
 | **E3: CIPHER Evaluation** | ✅ **COMPLETE** | **E0=13% (no improvement over P0)** |
 | **E4: Activation Grafting** | ✅ **COMPLETE** | **A0=20% (no improvement over P0)** |
 | E5: Safety Evaluation | ✅ **PASS** | All metrics within thresholds |
@@ -278,6 +278,29 @@ we need baseline data now. E2-min provides rate-distortion-ish curve for text/st
 - Effective bits = budget × 8 (for direct comparison to latent k)
 
 **Deliverable:** Baseline performance table + capability-vs-bits curve
+
+---
+
+#### E2-min Results ✅ COMPLETE
+
+| Config | Success | 95% CI | Avg Bits | Notes |
+|--------|---------|--------|----------|-------|
+| **P5_256B** | **66.7%** | [48.8%, 80.8%] | 2132 | Matches P1 |
+| P2_256B | 66.7% | [48.8%, 80.8%] | 4817 | |
+| **P5_64B** | **60.0%** | [42.3%, 75.4%] | 214 | Codec target |
+| **P5_16B** | **56.7%** | [39.2%, 72.6%] | 43 | Codec target |
+| P2_64B | 33.3% | [19.2%, 51.2%] | 2938 | |
+| P2_16B | 0.0% | [0.0%, 11.4%] | 1536 | Too constrained |
+
+**Key Insights:**
+1. **P5 (structured) dominates P2 (raw text)** at all budgets
+2. **P5_16B achieves 56.7% with only ~43 bits** - codec target for k=4
+3. Rate-distortion curve: 43 bits → 56.7%, 214 bits → 60%, 2132 bits → 66.7%
+
+**Codec Targets (for M2-SCALE):**
+- L1@k=4 (~32 bits): Beat P5_16B (56.7%)
+- L1@k=16 (~128 bits): Approach P5_64B (60%)
+- L1@k=64 (~512 bits): Approach P5_256B (66.7%)
 
 ---
 

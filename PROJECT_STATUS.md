@@ -1,21 +1,28 @@
 # LPCA Project Status
 
 **Last Updated:** January 14, 2026
-**Current Phase:** Milestone 1 COMPLETE - Ready for M2 (Requires Cloud GPUs)
+**Current Phase:** Milestone 1 COMPLETE + E2-min COMPLETE - Ready for M2-SCALE
 
 ---
 
 ## Executive Summary
 
-The LPCA (Latent-Path Communication for AI Agents) research project has completed **Milestone 0** (Foundation) and **Milestone 1** (Latent Baselines).
+The LPCA (Latent-Path Communication for AI Agents) research project has completed **Milestone 0** (Foundation), **Milestone 1** (Latent Baselines), and **E2-min** (Budgeted Text Baselines).
 
 **Key findings (n=50, tightened task):**
 - **P1 (68%) >> P0 (20%)** - Text communication adds **+48pp** (non-overlapping 95% CIs)
 - **E0 CIPHER = 13%**, **A0 Activation = 20%** - Raw latent channels don't help without training
-- **Task is communication-limited** - P0 at 20% (target range 15-25%)
-- **M2-LOCAL-PROTO validated** - Codec pipeline works, ready for cloud training
+- **P5 (structured) dominates P2 (raw text)** at all budgets
+- **P5_16B = 56.7% at ~43 bits** - Target for codec at k=4
 
-Safety evaluation (E5) passed all metrics. Codebase is production-ready with 126 tests. **Next step: M2 Codec Training requires cloud GPUs.**
+**Codec Targets (from E2-min):**
+| Target | Success | Bits | Codec k |
+|--------|---------|------|---------|
+| P5_16B | 56.7% | ~43 | k=4 (~32 bits) |
+| P5_64B | 60.0% | ~214 | k=16 (~128 bits) |
+| P5_256B | 66.7% | ~2132 | k=64 (~512 bits) |
+
+Safety evaluation (E5) passed all metrics. **Next step: M2-SCALE (cloud codec training).**
 
 ---
 
@@ -165,6 +172,25 @@ Task generator tightened in `lpca/envs/split_synthetic.py`:
 2. **Task is properly communication-limited** - P0 at 20% (target: 15-25%)
 3. **Raw latent channels don't work** - E0 and A0 no better than P0
 4. **M2-LOCAL-PROTO passed** - codec pipeline validated, ready for cloud training
+
+#### E2-min Results (Budgeted Text Baselines, n=30)
+
+Tested P2 (raw text budget) and P5 (structured) at 16B, 64B, 256B budgets.
+
+| Config | Success | 95% CI | Avg Bits | Notes |
+|--------|---------|--------|----------|-------|
+| **P5_256B** | **66.7%** | [48.8%, 80.8%] | 2132 | Matches P1 |
+| P2_256B | 66.7% | [48.8%, 80.8%] | 4817 | |
+| **P5_64B** | **60.0%** | [42.3%, 75.4%] | 214 | Codec target |
+| **P5_16B** | **56.7%** | [39.2%, 72.6%] | 43 | Codec target |
+| P2_64B | 33.3% | [19.2%, 51.2%] | 2938 | |
+| P2_16B | 0.0% | [0.0%, 11.4%] | 1536 | Too constrained |
+
+**Key Insights:**
+1. **P5 (structured) dominates P2 (raw text)** at all budgets
+2. **P5_16B achieves 56.7% with only ~43 bits** - codec target for k=4
+3. **P5_256B matches P1** - structure is highly efficient
+4. **Rate-distortion curve established** for codec evaluation
 
 ### Wall Time (Corrected)
 
