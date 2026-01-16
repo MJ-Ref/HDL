@@ -392,11 +392,14 @@ channel. See "Training Objective Fix" section below.
 
 **Decision:** Fix training objective before proceeding to Phase 2.
 
-**Phase 0: Fix Training Objective (BLOCKER)**
-1. Replace MSE reconstruction with KL distillation
-2. Retrain codec with new objective
-3. Rerun plumbing proof to verify injection works
-4. Only proceed to Phase 2 if plumbing proof passes
+**Phase 0: Fix Training Objective (BLOCKER)** ✅ Code done, needs training run
+1. ✅ Replace MSE reconstruction with KL distillation (implemented)
+2. Train codec on Modal A100 (`python modal/train_m2_codec.py --k 4 --epochs 10`)
+   - Note: Local `--local` requires `--data` pointing to real JSONL (not in repo)
+   - Modal volume `/data/m2_train.jsonl` has the data
+3. Run plumbing proof (`--plumbing-proof <checkpoint> --k 4`)
+4. If plumbing proof still ~0% after 10 epochs → upgrade to multi-token distillation
+5. Only proceed to Phase 2 if plumbing proof shows L1 > P0
 
 **Phase 2: Clean Gate 1 Run**
 1. Verify all validity checks pass
@@ -459,10 +462,15 @@ loss = F.kl_div(
 behave as if it had seen the text message. This requires involving the receiver model
 in training, not just reconstructing embeddings.
 
-**Alternative Approaches:**
-1. **Response-level distillation:** Match full sequence likelihood, not just next-token
-2. **REINFORCE:** End-to-end task reward (harder to optimize)
-3. **Contrastive learning:** Semantic similarity in latent space (may help as auxiliary)
+**Current Limitation: 1-Step Distillation**
+The current implementation matches only the first token after "ANSWER:". This is a weak
+signal. If plumbing proof remains ~0% after 10 epochs, upgrade to multi-token distillation
+using the dataset's `receiver_output`/`receiver_tokens` fields.
+
+**Upgrade Path (if 1-step fails):**
+1. **Multi-token distillation:** Match teacher logits for N tokens of the answer sequence
+2. **Response-level distillation:** Match full sequence likelihood
+3. **REINFORCE:** End-to-end task reward (harder to optimize)
 
 ---
 
