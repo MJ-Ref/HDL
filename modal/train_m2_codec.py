@@ -295,7 +295,8 @@ ANSWER:"""
 
                 # Get student embeddings and prepend prefix
                 student_embeds = model.get_input_embeddings()(student_inputs['input_ids'])
-                soft_prefix = prefix_embedding.unsqueeze(1)  # (1, 1, d_model)
+                # Cast prefix to match model dtype (float16 on CUDA)
+                soft_prefix = prefix_embedding.unsqueeze(1).to(student_embeds.dtype)  # (1, 1, d_model)
                 combined_embeds = torch.cat([soft_prefix, student_embeds], dim=1)
 
                 # Attention mask for combined input
@@ -677,7 +678,8 @@ ANSWER in format {{"x1": <value>, "x2": <value>, "x3": <value>, "x4": <value>}}:
     input_embeds_B = model.get_input_embeddings()(inputs_B['input_ids'])
 
     # Expand prefix_embedding to match expected shape (1, 1, d_model) -> prepend as soft token
-    soft_prefix = prefix_embedding.unsqueeze(1)  # (1, 1, d_model)
+    # Cast to model dtype (float16 on CUDA)
+    soft_prefix = prefix_embedding.unsqueeze(1).to(input_embeds_B.dtype)  # (1, 1, d_model)
 
     # Concatenate: [soft_prefix, prompt_embeddings]
     combined_embeds = torch.cat([soft_prefix, input_embeds_B], dim=1)
@@ -1100,7 +1102,7 @@ if MODAL_AVAILABLE:
     # Persistent volume for training data
     volume = modal.Volume.from_name("m2-training-data", create_if_missing=True)
 
-    # Define the image with dependencies and LPCA package
+    # Define the image with dependencies and lpca package
     image = (
         modal.Image.debian_slim(python_version="3.10")
         .pip_install(
@@ -1111,12 +1113,12 @@ if MODAL_AVAILABLE:
             "numpy",
             "scipy",
         )
-        .add_local_python_source("lpca")
+        .add_local_dir("lpca", remote_path="/root/lpca")
     )
 
     @app.function(
         gpu="A100",
-        timeout=3600,
+        timeout=7200,  # 2 hours
         image=image,
         volumes={"/data": volume},
     )
@@ -1209,11 +1211,11 @@ def main():
             if not MODAL_AVAILABLE:
                 print("Modal not available. Install with: pip install modal")
                 sys.exit(1)
-            # Run on Modal in parallel
+            # Run on Modal in parallel (use Modal volume path)
             with app.run():
                 results = []
                 for k in k_values:
-                    result = train_on_modal.remote(k, args.epochs, args.data)
+                    result = train_on_modal.remote(k, args.epochs, "/data/m2_train.jsonl")
                     results.append(result)
                 # Collect results
                 for r in results:
@@ -1232,7 +1234,8 @@ def main():
                 print("Modal not available. Install with: pip install modal")
                 sys.exit(1)
             with app.run():
-                result = train_on_modal.remote(args.k, args.epochs, args.data)
+                # Use Modal volume path, not local path
+                result = train_on_modal.remote(args.k, args.epochs, "/data/m2_train.jsonl")
                 print(f"\nResult: {result}")
 
 
