@@ -467,7 +467,8 @@ Based on your constraints and the encoded context, provide an ANSWER.
                     msg_pooled = get_last_token_embedding(msg_hidden, msg_inputs['attention_mask'])
 
                 # Encode correct message through codec → k prefix embeddings + reconstruction
-                latent, prefix_embeddings, reconstructed = codec(msg_pooled)  # prefix_embeddings: (1, k, d_model)
+                # Cast to float32 for codec (model outputs float16 on CUDA)
+                latent, prefix_embeddings, reconstructed = codec(msg_pooled.float())  # prefix_embeddings: (1, k, d_model)
                 k_prefix = prefix_embeddings.shape[1]
 
                 # Reconstruction loss: force encoder to retain message-specific info
@@ -501,7 +502,7 @@ Based on your constraints and the encoded context, provide an ANSWER.
                     wrong_pooled = get_last_token_embedding(wrong_hidden, wrong_msg_inputs['attention_mask'])
 
                 # Encode wrong message through codec (ignore reconstruction for wrong)
-                wrong_latent, wrong_prefix_embeddings, _ = codec(wrong_pooled)
+                wrong_latent, wrong_prefix_embeddings, _ = codec(wrong_pooled.float())
 
                 # === STUDENT FORWARD WITH CORRECT PREFIX ===
                 student_embeds = model.get_input_embeddings()(student_input_ids)
@@ -774,7 +775,7 @@ def run_diagnostics(
             pooled = get_last_token_embedding(hidden, msg_inputs['attention_mask'])
 
             # Get prefix embeddings
-            latent, prefix_emb, _ = codec(pooled)
+            latent, prefix_emb, _ = codec(pooled.float())
             # Flatten k prefix vectors to single vector for comparison
             prefix_flat = prefix_emb.view(1, -1).cpu()
             prefix_embeddings_list.append(prefix_flat)
@@ -899,7 +900,7 @@ Based on your constraints and the encoded context, provide an ANSWER.
             msg_outputs = model(**msg_inputs, output_hidden_states=True)
             hidden = msg_outputs.hidden_states[-1]
             pooled = get_last_token_embedding(hidden, msg_inputs['attention_mask'])
-            latent, correct_prefix, _ = codec(pooled)
+            latent, correct_prefix, _ = codec(pooled.float())
 
         # Track prefix norm
         prefix_norm = correct_prefix.norm(dim=-1).mean().item()
@@ -912,7 +913,7 @@ Based on your constraints and the encoded context, provide an ANSWER.
             shuffle_outputs = model(**shuffle_msg_inputs, output_hidden_states=True)
             shuffle_hidden = shuffle_outputs.hidden_states[-1]
             shuffle_pooled = get_last_token_embedding(shuffle_hidden, shuffle_msg_inputs['attention_mask'])
-            _, shuffle_prefix, _ = codec(shuffle_pooled)
+            _, shuffle_prefix, _ = codec(shuffle_pooled.float())
 
         # Null prefix (zeros)
         null_prefix = torch.zeros_like(correct_prefix)
@@ -1374,7 +1375,7 @@ Start with "MESSAGE:" followed by the key information from your observation."""
             latent = torch.randn(1, codec.k, codec.d, device=device)
         else:
             # Normal or shuffle: use actual codec encoding
-            latent = codec.encode(pooled)
+            latent = codec.encode(pooled.float())
 
         # Decode to k prefix embeddings
         prefix_embeddings = codec.decode(latent)  # Shape: (1, k, d_model)
