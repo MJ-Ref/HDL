@@ -117,6 +117,10 @@ def create_codec_model(d_model: int, k_vectors: int, hidden_dim: int = 512):
 
         Encoder: text embedding -> k latent vectors
         Decoder: k vectors -> prefix embeddings for receiver
+
+        Prefix calibration:
+        - LayerNorm on output ensures embeddings have proper scale
+        - Learned scale gate starts small (near null) and grows during training
         """
 
         def __init__(self, d_model: int, k_vectors: int, hidden_dim: int):
@@ -162,6 +166,17 @@ def create_codec_model(d_model: int, k_vectors: int, hidden_dim: int = 512):
                 nn.Linear(hidden_dim, d_model),  # Reconstruct original embedding
             )
 
+            # === PREFIX CALIBRATION ===
+            # LayerNorm ensures output vectors have normalized scale
+            self.prefix_norm = nn.LayerNorm(d_model)
+
+            # Learned scale gate: starts small (0.1) so initial prefixes are near-null
+            # This lets training gradually "turn on" the prefix influence
+            self.scale_gate = nn.Parameter(torch.tensor(0.1))
+
+            # Target norm: will be set from model's token embeddings during first forward
+            self.register_buffer('target_norm', torch.tensor(1.0))
+
         def encode(self, text_embedding: 'torch.Tensor') -> 'torch.Tensor':
             """Encode text embedding to k latent vectors."""
             # text_embedding: (batch, d_model)
@@ -173,14 +188,28 @@ def create_codec_model(d_model: int, k_vectors: int, hidden_dim: int = 512):
             return encoded.view(-1, self.k, self.d)  # (batch, k, d_model)
 
         def decode(self, latent: 'torch.Tensor') -> 'torch.Tensor':
-            """Identity decoder: latent vectors ARE the prefix embeddings.
+            """Identity decoder with calibration: latent vectors ARE the prefix embeddings.
 
             This removes the decoder bottleneck that was causing collapse.
             The encoder directly produces prefix embeddings.
+
+            Calibration:
+            - LayerNorm ensures proper scale per-vector
+            - Scale gate controls overall influence (starts small, grows during training)
+            - Target norm rescales to match typical token embedding magnitude
             """
             # latent: (batch, k, d_model)
-            # Identity: prefix = latent (no transformation)
-            return latent
+            # Apply LayerNorm per-vector to normalize scale
+            prefix = self.prefix_norm(latent)
+
+            # Rescale to match target token embedding norm
+            # LayerNorm outputs have norm ~sqrt(d_model), we want target_norm
+            prefix = prefix * (self.target_norm / (self.d ** 0.5))
+
+            # Apply learned scale gate (starts at 0.1, can grow during training)
+            prefix = prefix * self.scale_gate
+
+            return prefix
 
         def reconstruct(self, latent: 'torch.Tensor') -> 'torch.Tensor':
             """Reconstruct original message embedding from latent."""
@@ -248,6 +277,14 @@ def train_codec(
     # Create codec
     codec = create_codec_model(d_model, config.k_vectors, config.hidden_dim)
     codec = codec.to(device)
+
+    # Set target norm from model's actual token embeddings
+    with torch.no_grad():
+        token_embeds = model.get_input_embeddings().weight
+        target_norm = token_embeds.norm(dim=1).mean().item()
+        codec.target_norm.fill_(target_norm)
+    print(f"Prefix target norm set to: {target_norm:.4f}")
+
     n_params = sum(p.numel() for p in codec.parameters())
     print(f"Codec parameters: {n_params:,} ({n_params/1e6:.1f}M)")
 
@@ -682,9 +719,21 @@ def run_diagnostics(
 
     # Recreate codec and load weights
     codec = create_codec_model(d_model, k_vectors, hidden_dim)
-    codec.load_state_dict(checkpoint['state_dict'])
+    # Handle loading old checkpoints that don't have prefix_norm/scale_gate
+    try:
+        codec.load_state_dict(checkpoint['state_dict'])
+    except RuntimeError as e:
+        # Old checkpoint without new calibration params - load what we can
+        print(f"  Note: Loading old checkpoint format, using default calibration")
+        codec.load_state_dict(checkpoint['state_dict'], strict=False)
     codec = codec.to(device)
     codec.eval()
+
+    # Set target norm from model's token embeddings
+    with torch.no_grad():
+        token_embeds = model.get_input_embeddings().weight
+        target_norm = token_embeds.norm(dim=1).mean().item()
+        codec.target_norm.fill_(target_norm)
 
     # Load some training samples
     print(f"Loading {n_samples} samples...")
@@ -778,12 +827,43 @@ def run_diagnostics(
         print("  ✓ Prefixes show meaningful differentiation")
 
     # ========== CHECK 2: DETERMINISTIC SEMANTIC CHECK ==========
-    print("\n--- Check 2: Deterministic Semantic Check ---")
+    # Now with value-weighted, value-only, format-only NLL + JSON-parse rate
+    print("\n--- Check 2: Semantic Check (value-weighted metrics) ---")
     print("Comparing log-probs: correct prefix vs shuffled prefix vs null")
 
-    correct_nlls = []
-    shuffle_nlls = []
-    null_nlls = []
+    # Helper to create value mask (same logic as training)
+    VALUE_WEIGHT = 10.0
+
+    def create_value_mask(answer_tokens, tokenizer):
+        """Create weight mask: 1.0 for format tokens, VALUE_WEIGHT for value digits."""
+        weights = [1.0] * len(answer_tokens)
+        value_mask = [False] * len(answer_tokens)  # True = value token
+        decoded_tokens = [tokenizer.decode([t]) for t in answer_tokens]
+        for i, tok_text in enumerate(decoded_tokens):
+            tok_stripped = tok_text.strip()
+            if tok_stripped in ['0', '1', '2', '3', '4', '5', '6', '7', '8', '9']:
+                if i > 0:
+                    prev_text = tokenizer.decode(answer_tokens[:i])
+                    if prev_text.rstrip().endswith(':'):
+                        weights[i] = VALUE_WEIGHT
+                        value_mask[i] = True
+        return weights, value_mask
+
+    # Metrics storage - now with multiple NLL types
+    metrics = {
+        'correct': {'unweighted': [], 'weighted': [], 'value_only': [], 'format_only': []},
+        'shuffle': {'unweighted': [], 'weighted': [], 'value_only': [], 'format_only': []},
+        'null': {'unweighted': [], 'weighted': [], 'value_only': [], 'format_only': []},
+    }
+    json_parse_results = {'correct': [], 'shuffle': [], 'null': []}
+
+    # Also track prefix norms to detect OOD embeddings
+    prefix_norms = []
+    # Get reference: typical token embedding norm
+    with torch.no_grad():
+        sample_embeds = model.get_input_embeddings().weight[:1000]  # First 1000 tokens
+        ref_norm = sample_embeds.norm(dim=1).mean().item()
+    print(f"  Reference token embedding norm: {ref_norm:.4f}")
 
     for i, sample in enumerate(samples[:min(10, len(samples))]):
         receiver_context = sample['receiver_context']
@@ -799,6 +879,11 @@ def run_diagnostics(
         answer_tokens = tokenizer.encode(answer_text, add_special_tokens=False)
         answer_tensor = torch.tensor([answer_tokens], device=device)
 
+        # Create value mask
+        weights, value_mask = create_value_mask(answer_tokens, tokenizer)
+        weight_tensor = torch.tensor([weights], device=device, dtype=torch.float32)
+        value_mask_tensor = torch.tensor([value_mask], device=device)
+
         # Student prompt
         student_prompt = f"""{receiver_context}
 
@@ -813,17 +898,19 @@ Based on your constraints and the encoded context, provide an ANSWER.
         with torch.no_grad():
             msg_outputs = model(**msg_inputs, output_hidden_states=True)
             hidden = msg_outputs.hidden_states[-1]
-            # Use last-token pooling for better discrimination
             pooled = get_last_token_embedding(hidden, msg_inputs['attention_mask'])
             latent, correct_prefix, _ = codec(pooled)
 
-        # Get shuffled message prefix (use next sample's message)
+        # Track prefix norm
+        prefix_norm = correct_prefix.norm(dim=-1).mean().item()
+        prefix_norms.append(prefix_norm)
+
+        # Get shuffled message prefix
         shuffle_msg = samples[(i + 7) % len(samples)]['sender_message']
         shuffle_msg_inputs = tokenizer(shuffle_msg, return_tensors="pt", truncation=True, max_length=256).to(device)
         with torch.no_grad():
             shuffle_outputs = model(**shuffle_msg_inputs, output_hidden_states=True)
             shuffle_hidden = shuffle_outputs.hidden_states[-1]
-            # Use last-token pooling for shuffled message
             shuffle_pooled = get_last_token_embedding(shuffle_hidden, shuffle_msg_inputs['attention_mask'])
             _, shuffle_prefix, _ = codec(shuffle_pooled)
 
@@ -835,7 +922,13 @@ Based on your constraints and the encoded context, provide an ANSWER.
         k_prefix = correct_prefix.shape[1]
         prompt_len = student_inputs['input_ids'].shape[1] + k_prefix
 
-        for prefix, nll_list in [(correct_prefix, correct_nlls), (shuffle_prefix, shuffle_nlls), (null_prefix, null_nlls)]:
+        conditions = [
+            ('correct', correct_prefix),
+            ('shuffle', shuffle_prefix),
+            ('null', null_prefix),
+        ]
+
+        for cond_name, prefix in conditions:
             soft_prefix = prefix.to(student_embeds.dtype)
             combined = torch.cat([soft_prefix, student_embeds], dim=1)
             attn_mask = torch.ones(1, combined.shape[1], device=device)
@@ -846,28 +939,118 @@ Based on your constraints and the encoded context, provide an ANSWER.
 
                 log_probs = F.log_softmax(logits, dim=-1)
                 target_log_probs = log_probs.gather(2, answer_tensor.unsqueeze(-1)).squeeze(-1)
-                nll = -target_log_probs.mean().item()
-                nll_list.append(nll)
 
-    avg_correct = sum(correct_nlls) / len(correct_nlls) if correct_nlls else 0
-    avg_shuffle = sum(shuffle_nlls) / len(shuffle_nlls) if shuffle_nlls else 0
-    avg_null = sum(null_nlls) / len(null_nlls) if null_nlls else 0
+                # 1. Unweighted NLL (old metric)
+                nll_unweighted = -target_log_probs.mean().item()
+                metrics[cond_name]['unweighted'].append(nll_unweighted)
 
-    print(f"  Average NLL (lower = answer more likely):")
-    print(f"    Correct prefix: {avg_correct:.4f}")
-    print(f"    Shuffled prefix: {avg_shuffle:.4f}")
-    print(f"    Null prefix: {avg_null:.4f}")
+                # 2. Value-weighted NLL (matches training objective)
+                weighted_nll = -target_log_probs * weight_tensor
+                nll_weighted = (weighted_nll.sum() / weight_tensor.sum()).item()
+                metrics[cond_name]['weighted'].append(nll_weighted)
 
-    gap_shuffle = avg_shuffle - avg_correct
-    gap_null = avg_null - avg_correct
+                # 3. Value-only NLL (just the digits that matter)
+                if value_mask_tensor.any():
+                    value_nll = -target_log_probs[value_mask_tensor].mean().item()
+                else:
+                    value_nll = float('nan')
+                metrics[cond_name]['value_only'].append(value_nll)
+
+                # 4. Format-only NLL (punctuation, keys, etc)
+                format_mask = ~value_mask_tensor
+                if format_mask.any():
+                    format_nll = -target_log_probs[format_mask].mean().item()
+                else:
+                    format_nll = float('nan')
+                metrics[cond_name]['format_only'].append(format_nll)
+
+            # JSON parse rate under greedy decoding
+            with torch.no_grad():
+                # Greedy generation from the prompt
+                gen_prompt = student_prompt + "\nANSWER: "
+                gen_inputs = tokenizer(gen_prompt, return_tensors="pt", truncation=True, max_length=512).to(device)
+                gen_embeds = model.get_input_embeddings()(gen_inputs['input_ids'])
+                gen_combined = torch.cat([soft_prefix, gen_embeds], dim=1)
+                gen_mask = torch.ones(1, gen_combined.shape[1], device=device)
+
+                # Forward pass to get KV cache
+                gen_outputs = model(inputs_embeds=gen_combined, attention_mask=gen_mask, use_cache=True)
+                past_kv = gen_outputs.past_key_values
+
+                # Greedy decode up to 64 tokens
+                generated_ids = []
+                next_logits = gen_outputs.logits[:, -1, :]
+                for _ in range(64):
+                    next_token = next_logits.argmax(dim=-1, keepdim=True)
+                    generated_ids.append(next_token.item())
+                    if next_token.item() == tokenizer.eos_token_id:
+                        break
+                    # Extend attention mask
+                    curr_len = gen_combined.shape[1] + len(generated_ids)
+                    ext_mask = torch.ones(1, curr_len, device=device)
+                    out = model(input_ids=next_token, attention_mask=ext_mask, past_key_values=past_kv, use_cache=True)
+                    past_kv = out.past_key_values
+                    next_logits = out.logits[:, -1, :]
+
+                gen_text = tokenizer.decode(generated_ids, skip_special_tokens=True)
+                # Try to parse JSON
+                json_match = re.search(r'\{[^}]+\}', gen_text)
+                parsed = False
+                if json_match:
+                    try:
+                        json.loads(json_match.group())
+                        parsed = True
+                    except json.JSONDecodeError:
+                        pass
+                json_parse_results[cond_name].append(parsed)
+
+    # Aggregate results
+    def safe_mean(lst):
+        valid = [x for x in lst if x == x]  # filter NaN
+        return sum(valid) / len(valid) if valid else float('nan')
+
+    results_table = {}
+    for cond in ['correct', 'shuffle', 'null']:
+        results_table[cond] = {
+            'unweighted_nll': safe_mean(metrics[cond]['unweighted']),
+            'weighted_nll': safe_mean(metrics[cond]['weighted']),
+            'value_only_nll': safe_mean(metrics[cond]['value_only']),
+            'format_only_nll': safe_mean(metrics[cond]['format_only']),
+            'json_parse_rate': sum(json_parse_results[cond]) / len(json_parse_results[cond]) if json_parse_results[cond] else 0,
+        }
+
+    # Print results
+    print(f"\n  Prefix norm: mean={safe_mean(prefix_norms):.4f} (ref={ref_norm:.4f}, ratio={safe_mean(prefix_norms)/ref_norm:.2f}x)")
+
+    print(f"\n  NLL Metrics (lower = better):")
+    print(f"  {'Condition':<12} {'Unweight':<10} {'Weighted':<10} {'Value':<10} {'Format':<10} {'JSON%':<8}")
+    print(f"  {'-'*60}")
+    for cond in ['correct', 'shuffle', 'null']:
+        r = results_table[cond]
+        print(f"  {cond:<12} {r['unweighted_nll']:<10.4f} {r['weighted_nll']:<10.4f} "
+              f"{r['value_only_nll']:<10.4f} {r['format_only_nll']:<10.4f} {r['json_parse_rate']*100:<8.1f}")
+
+    # Compute gaps using weighted NLL (matches training)
+    gap_shuffle_weighted = results_table['shuffle']['weighted_nll'] - results_table['correct']['weighted_nll']
+    gap_null_weighted = results_table['null']['weighted_nll'] - results_table['correct']['weighted_nll']
+    gap_shuffle_value = results_table['shuffle']['value_only_nll'] - results_table['correct']['value_only_nll']
 
     print(f"\n  Gaps (positive = correct is better):")
-    print(f"    Shuffle gap: {gap_shuffle:.4f}")
-    print(f"    Null gap: {gap_null:.4f}")
+    print(f"    Shuffle gap (weighted): {gap_shuffle_weighted:.4f}")
+    print(f"    Shuffle gap (value-only): {gap_shuffle_value:.4f}")
+    print(f"    Null gap (weighted): {gap_null_weighted:.4f}")
 
-    if gap_shuffle > 0.1:
-        print("  ✓ Shuffle makes answer harder - semantic dependence detected!")
-    elif gap_shuffle > 0:
+    # Check prefix norm
+    norm_ratio = safe_mean(prefix_norms) / ref_norm
+    if norm_ratio > 3.0:
+        print(f"  ⚠️ WARNING: Prefix norm is {norm_ratio:.1f}x reference - OOD soft prompts!")
+        print(f"     This may hurt format tokens while still being message-dependent")
+    elif norm_ratio < 0.3:
+        print(f"  ⚠️ WARNING: Prefix norm is {norm_ratio:.1f}x reference - too small to influence")
+
+    if gap_shuffle_weighted > 0.1:
+        print("  ✓ Shuffle makes answer harder (weighted) - semantic dependence detected!")
+    elif gap_shuffle_weighted > 0:
         print("  ⚠️ Small shuffle gap - weak semantic signal")
     else:
         print("  ❌ No shuffle gap - codec not encoding semantic content")
@@ -878,12 +1061,18 @@ Based on your constraints and the encoded context, provide an ANSWER.
             'min_sim': min_sim,
             'max_sim': max_sim,
         },
+        'prefix_norm': {
+            'mean': safe_mean(prefix_norms),
+            'reference': ref_norm,
+            'ratio': norm_ratio,
+        },
         'semantic_check': {
-            'correct_nll': avg_correct,
-            'shuffle_nll': avg_shuffle,
-            'null_nll': avg_null,
-            'shuffle_gap': gap_shuffle,
-            'null_gap': gap_null,
+            'correct': results_table['correct'],
+            'shuffle': results_table['shuffle'],
+            'null': results_table['null'],
+            'shuffle_gap_weighted': gap_shuffle_weighted,
+            'shuffle_gap_value_only': gap_shuffle_value,
+            'null_gap_weighted': gap_null_weighted,
         }
     }
 
@@ -946,9 +1135,20 @@ def evaluate_codec(
 
     # Recreate codec and load weights
     codec = create_codec_model(d_model, k_vectors, hidden_dim)
-    codec.load_state_dict(checkpoint['state_dict'])
+    # Handle loading old checkpoints that don't have prefix_norm/scale_gate
+    try:
+        codec.load_state_dict(checkpoint['state_dict'])
+    except RuntimeError as e:
+        print(f"  Note: Loading old checkpoint format, using default calibration")
+        codec.load_state_dict(checkpoint['state_dict'], strict=False)
     codec = codec.to(device)
     codec.eval()
+
+    # Set target norm from model's token embeddings
+    with torch.no_grad():
+        token_embeds = model.get_input_embeddings().weight
+        target_norm = token_embeds.norm(dim=1).mean().item()
+        codec.target_norm.fill_(target_norm)
 
     results = {}
 
@@ -1095,8 +1295,13 @@ def _run_codec_episode(
 
     # P0 FIX: Fail fast if env not available (never return placeholder results)
     try:
+        # Add both Modal path (/root) and local repo root to sys.path
         if '/root' not in sys.path:
             sys.path.insert(0, '/root')
+        # For local evaluation, add the repo root (parent of modal/)
+        repo_root = str(Path(__file__).parent.parent)
+        if repo_root not in sys.path:
+            sys.path.insert(0, repo_root)
         from lpca.envs.split_synthetic import SplitSyntheticEnv
     except ImportError as e:
         raise RuntimeError(f"LPCA env required for evaluation (install or mount lpca package): {e}")
@@ -1282,8 +1487,12 @@ def _run_text_baseline_episode(
     import re
 
     try:
+        # Add both Modal path (/root) and local repo root to sys.path
         if '/root' not in sys.path:
             sys.path.insert(0, '/root')
+        repo_root = str(Path(__file__).parent.parent)
+        if repo_root not in sys.path:
+            sys.path.insert(0, repo_root)
         from lpca.envs.split_synthetic import SplitSyntheticEnv
     except ImportError as e:
         raise RuntimeError(f"LPCA env required for evaluation: {e}")
@@ -1406,9 +1615,20 @@ def run_plumbing_proof(
     hidden_dim = checkpoint['hidden_dim']
 
     codec = create_codec_model(d_model, k_vectors, hidden_dim)
-    codec.load_state_dict(checkpoint['state_dict'])
+    # Handle loading old checkpoints that don't have prefix_norm/scale_gate
+    try:
+        codec.load_state_dict(checkpoint['state_dict'])
+    except RuntimeError as e:
+        print(f"  Note: Loading old checkpoint format, using default calibration")
+        codec.load_state_dict(checkpoint['state_dict'], strict=False)
     codec = codec.to(device)
     codec.eval()
+
+    # Set target norm from model's token embeddings
+    with torch.no_grad():
+        token_embeds = model.get_input_embeddings().weight
+        target_norm = token_embeds.norm(dim=1).mean().item()
+        codec.target_norm.fill_(target_norm)
 
     print(f"Loaded codec: k={k_vectors}, d_model={d_model}")
     print(f"Testing on {n_episodes} episodes")
