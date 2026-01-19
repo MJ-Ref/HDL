@@ -78,6 +78,31 @@ class M2Config:
 
 
 # ============================================================================
+# Embedding Utilities
+# ============================================================================
+
+def get_last_token_embedding(hidden_states, attention_mask):
+    """Extract embedding of the last actual token (not padding).
+
+    For decoder-only models like Gemma/Qwen, the last token contains
+    more discriminative information than mean pooling.
+
+    Args:
+        hidden_states: (batch, seq_len, hidden_size)
+        attention_mask: (batch, seq_len)
+
+    Returns:
+        (batch, hidden_size) - embedding of last actual token
+    """
+    import torch
+    # Get position of last actual token for each sample
+    seq_lengths = attention_mask.sum(dim=1) - 1  # (batch,) - indices of last tokens
+    batch_indices = torch.arange(hidden_states.shape[0], device=hidden_states.device)
+    last_token_emb = hidden_states[batch_indices, seq_lengths]  # (batch, hidden_size)
+    return last_token_emb
+
+
+# ============================================================================
 # Codec Architecture
 # ============================================================================
 
@@ -98,8 +123,10 @@ def create_codec_model(d_model: int, k_vectors: int, hidden_dim: int = 512):
             super().__init__()
             self.k = k_vectors
             self.d = d_model
+            self.training_noise_scale = 0.0  # Disabled - let diversity loss handle it
 
             # Encoder: pooled text embedding -> k latent vectors
+            # NO dropout - let reconstruction loss enforce input-dependent outputs
             self.encoder = nn.Sequential(
                 nn.Linear(d_model, hidden_dim),
                 nn.GELU(),
@@ -110,7 +137,9 @@ def create_codec_model(d_model: int, k_vectors: int, hidden_dim: int = 512):
                 nn.Linear(hidden_dim, k_vectors * d_model),
             )
 
-            # Decoder: k vectors -> single prefix embedding
+            # Decoder: k vectors -> k prefix embeddings (NOT 1!)
+            # This gives the model k prefix tokens to convey information
+            # NO dropout - fully deterministic
             self.decoder = nn.Sequential(
                 nn.Linear(k_vectors * d_model, hidden_dim),
                 nn.GELU(),
@@ -118,26 +147,53 @@ def create_codec_model(d_model: int, k_vectors: int, hidden_dim: int = 512):
                 nn.Linear(hidden_dim, hidden_dim),
                 nn.GELU(),
                 nn.LayerNorm(hidden_dim),
-                nn.Linear(hidden_dim, d_model),
+                nn.Linear(hidden_dim, k_vectors * d_model),  # Output k vectors, not 1
+            )
+
+            # Reconstructor: latent -> original message embedding
+            # Forces encoder to retain message-specific information
+            self.reconstructor = nn.Sequential(
+                nn.Linear(k_vectors * d_model, hidden_dim),
+                nn.GELU(),
+                nn.LayerNorm(hidden_dim),
+                nn.Linear(hidden_dim, hidden_dim),
+                nn.GELU(),
+                nn.LayerNorm(hidden_dim),
+                nn.Linear(hidden_dim, d_model),  # Reconstruct original embedding
             )
 
         def encode(self, text_embedding: 'torch.Tensor') -> 'torch.Tensor':
             """Encode text embedding to k latent vectors."""
             # text_embedding: (batch, d_model)
             encoded = self.encoder(text_embedding)  # (batch, k * d_model)
+            # Add noise during training to break collapse
+            if self.training and self.training_noise_scale > 0:
+                noise = torch.randn_like(encoded) * self.training_noise_scale
+                encoded = encoded + noise
             return encoded.view(-1, self.k, self.d)  # (batch, k, d_model)
 
         def decode(self, latent: 'torch.Tensor') -> 'torch.Tensor':
-            """Decode k latent vectors to prefix embedding."""
+            """Identity decoder: latent vectors ARE the prefix embeddings.
+
+            This removes the decoder bottleneck that was causing collapse.
+            The encoder directly produces prefix embeddings.
+            """
+            # latent: (batch, k, d_model)
+            # Identity: prefix = latent (no transformation)
+            return latent
+
+        def reconstruct(self, latent: 'torch.Tensor') -> 'torch.Tensor':
+            """Reconstruct original message embedding from latent."""
             # latent: (batch, k, d_model)
             flat = latent.view(-1, self.k * self.d)  # (batch, k * d_model)
-            return self.decoder(flat)  # (batch, d_model)
+            return self.reconstructor(flat)  # (batch, d_model)
 
-        def forward(self, text_embedding: 'torch.Tensor') -> Tuple['torch.Tensor', 'torch.Tensor']:
-            """Full encode-decode pass."""
+        def forward(self, text_embedding: 'torch.Tensor') -> Tuple['torch.Tensor', 'torch.Tensor', 'torch.Tensor']:
+            """Full encode-decode pass with reconstruction."""
             latent = self.encode(text_embedding)
-            reconstructed = self.decode(latent)
-            return latent, reconstructed
+            prefix_embeddings = self.decode(latent)  # (batch, k, d_model)
+            reconstructed = self.reconstruct(latent)  # (batch, d_model)
+            return latent, prefix_embeddings, reconstructed
 
     return LatentCodec(d_model, k_vectors, hidden_dim)
 
@@ -224,58 +280,142 @@ def train_codec(
     optimizer = torch.optim.AdamW(codec.parameters(), lr=config.learning_rate)
     scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, config.epochs)
 
-    # Training loop with KL distillation
-    # Goal: Train codec so Agent B with prefix behaves like Agent B with text message
-    history = {'loss': [], 'kl_loss': [], 'epoch': []}
+    # Training loop with VALUE-WEIGHTED CE + CONTRASTIVE + RECONSTRUCTION loss
+    # Key insight: KL over "ANSWER: {"x1": 0, ...}" is dominated by formatting tokens
+    # Solution: Upweight value tokens (actual digits) + contrastive term for shuffle
+    # CRITICAL: Reconstruction loss forces encoder to retain message-specific information
+    history = {'loss': [], 'ce_loss': [], 'contrastive_loss': [], 'diversity_loss': [], 'recon_loss': [], 'mean_cosim': [], 'epoch': [], 'tokens_per_sample': []}
 
-    print(f"\nTraining for {config.epochs} epochs (KL distillation)...")
+    import re
+
+    def extract_answer_with_value_mask(receiver_output: str) -> Optional[Tuple[List[int], List[float]]]:
+        """
+        Extract answer tokens AND create a weight mask that upweights value tokens.
+
+        Returns (tokens, weights) where weights[i] >> 1.0 for actual value digits.
+        """
+        # Look for ANSWER: {"x1": V1, "x2": V2, "x3": V3, "x4": V4} pattern
+        match = re.search(r'ANSWER:\s*(\{[^}]+\})', receiver_output)
+        if not match:
+            return None
+
+        answer_json = match.group(1)
+        answer_text = "ANSWER: " + answer_json
+        tokens = tokenizer.encode(answer_text, add_special_tokens=False)
+
+        if len(tokens) < 5:
+            return None
+
+        # Create weight mask: 1.0 for formatting, VALUE_WEIGHT for actual values
+        VALUE_WEIGHT = 10.0  # Upweight value tokens 10x
+        weights = [1.0] * len(tokens)
+
+        # Decode each token and check if it's a value digit (0, 1, 2)
+        # Also upweight tokens that come right after ": " (the value position)
+        decoded_tokens = [tokenizer.decode([t]) for t in tokens]
+        for i, tok_text in enumerate(decoded_tokens):
+            # Check if token is a digit that could be a value
+            tok_stripped = tok_text.strip()
+            if tok_stripped in ['0', '1', '2', '3', '4', '5', '6', '7', '8', '9']:
+                # Check context: is this after a colon? (value position)
+                if i > 0:
+                    prev_text = tokenizer.decode(tokens[:i])
+                    if prev_text.rstrip().endswith(':'):
+                        weights[i] = VALUE_WEIGHT
+
+        return tokens, weights
+
+    # Collect all messages for shuffling (negative sampling)
+    all_messages = [s['sender_message'] for s in dataset.samples if s.get('sender_message')]
+
+    print(f"\nTraining for {config.epochs} epochs (VALUE-WEIGHTED CE + CONTRASTIVE + RECONSTRUCTION + INFO-PRESERVE)...")
+    # Loss hyperparameters
+    CONTRASTIVE_MARGIN = 1.0  # Margin for contrastive loss
+    CONTRASTIVE_WEIGHT = 0.5  # Weight of contrastive term
+    DIVERSITY_WEIGHT = 0.0  # Disabled - info preservation handles this
+    DIVERSITY_THRESHOLD = 0.5  # N/A when weight is 0
+    RECONSTRUCTION_WEIGHT = 20.0  # Strong - helps with input-dependent encoding
+    INFO_PRESERVE_WEIGHT = 10.0  # Force encoder to preserve pairwise input similarities
+
     for epoch in range(config.epochs):
         codec.train()
         epoch_loss = 0
-        epoch_kl = 0
+        epoch_ce = 0
+        epoch_contrastive = 0
+        epoch_diversity = 0
+        epoch_recon = 0  # Track reconstruction loss
+        epoch_info_preserve = 0  # Track info preservation loss
+        epoch_cosim = 0  # Track mean cosine similarity for debugging
+        epoch_tokens = 0
         n_batches = 0
+
+        # Shuffle messages for negative sampling at start of each epoch
+        shuffled_messages = all_messages.copy()
+        random.shuffle(shuffled_messages)
+        shuffle_idx = 0
 
         for batch in tqdm(dataloader, desc=f"Epoch {epoch+1}/{config.epochs}"):
             batch_loss = 0
-            batch_kl = 0
+            batch_ce = 0
+            batch_contrastive = 0
+            batch_recon = 0
+            batch_tokens = 0
             n_samples = 0
+            batch_prefixes = []  # Collect prefixes for diversity loss
+            batch_msg_pooled = []  # Collect input embeddings for info preservation loss
+            batch_latents = []  # Collect latent embeddings for info preservation loss
 
             for sample in batch:
                 receiver_context = sample['receiver_context']
                 sender_message = sample['sender_message']
+                receiver_output = sample.get('receiver_output', '')
 
-                # === TEACHER: Agent B with full text message ===
-                teacher_prompt = f"""{receiver_context}
+                # Only train on samples with actual ANSWER output + value weights
+                result = extract_answer_with_value_mask(receiver_output)
+                if result is None:
+                    continue  # Skip samples without clear answer
 
-MESSAGE from your partner:
-{sender_message}
+                answer_tokens, token_weights = result
 
-Based on your constraints and your partner's message, provide an ANSWER.
-ANSWER:"""
+                # Limit answer length for efficiency
+                answer_tokens = answer_tokens[:64]
+                token_weights = token_weights[:64]
+                answer_tensor = torch.tensor([answer_tokens], device=device)
+                weight_tensor = torch.tensor([token_weights], device=device, dtype=torch.float32)
+                n_answer_tokens = len(answer_tokens)
 
-                # === STUDENT: Agent B with no text (will get prefix) ===
+                # Get shuffled (wrong) message for contrastive negative
+                wrong_message = shuffled_messages[shuffle_idx % len(shuffled_messages)]
+                # Ensure it's actually different
+                while wrong_message == sender_message and len(shuffled_messages) > 1:
+                    shuffle_idx += 1
+                    wrong_message = shuffled_messages[shuffle_idx % len(shuffled_messages)]
+                shuffle_idx += 1
+
+                # === STUDENT: Agent B with no text (will get prefix) + answer tokens ===
                 student_prompt = f"""{receiver_context}
 
 Your partner sent you encoded information (injected as a learned prefix).
 Based on your constraints and the encoded context, provide an ANSWER.
-ANSWER:"""
+"""
 
-                # Tokenize
-                teacher_inputs = tokenizer(
-                    teacher_prompt,
-                    return_tensors="pt",
-                    truncation=True,
-                    max_length=512,
-                ).to(device)
-
-                student_inputs = tokenizer(
+                # Tokenize prompt (without answer)
+                student_prompt_inputs = tokenizer(
                     student_prompt,
                     return_tensors="pt",
                     truncation=True,
                     max_length=512,
+                    add_special_tokens=True,
                 ).to(device)
 
-                # Encode sender message for codec input
+                # Concatenate prompt + answer tokens for teacher-forcing
+                student_input_ids = torch.cat([student_prompt_inputs['input_ids'], answer_tensor], dim=1)
+                student_mask = torch.cat([
+                    student_prompt_inputs['attention_mask'],
+                    torch.ones(1, n_answer_tokens, device=device, dtype=student_prompt_inputs['attention_mask'].dtype)
+                ], dim=1)
+
+                # === ENCODE CORRECT MESSAGE ===
                 msg_inputs = tokenizer(
                     sender_message,
                     return_tensors="pt",
@@ -283,72 +423,187 @@ ANSWER:"""
                     max_length=256,
                 ).to(device)
 
-                # Get message embedding (pooled last hidden state)
                 with torch.no_grad():
                     msg_outputs = model(**msg_inputs, output_hidden_states=True)
                     msg_hidden = msg_outputs.hidden_states[-1]
-                    msg_mask = msg_inputs['attention_mask'].unsqueeze(-1).float()
-                    msg_pooled = (msg_hidden * msg_mask).sum(dim=1) / msg_mask.sum(dim=1)
+                    # Use last-token pooling instead of mean pooling for better discrimination
+                    msg_pooled = get_last_token_embedding(msg_hidden, msg_inputs['attention_mask'])
 
-                # Encode message through codec → prefix embedding
-                latent, prefix_embedding = codec(msg_pooled)  # prefix_embedding: (1, d_model)
+                # Encode correct message through codec → k prefix embeddings + reconstruction
+                latent, prefix_embeddings, reconstructed = codec(msg_pooled)  # prefix_embeddings: (1, k, d_model)
+                k_prefix = prefix_embeddings.shape[1]
 
-                # Get student embeddings and prepend prefix
-                student_embeds = model.get_input_embeddings()(student_inputs['input_ids'])
-                # Cast prefix to match model dtype (float16 on CUDA)
-                soft_prefix = prefix_embedding.unsqueeze(1).to(student_embeds.dtype)  # (1, 1, d_model)
+                # Reconstruction loss: force encoder to retain message-specific info
+                # Use MSE loss - stricter than cosine similarity, forces exact reconstruction
+                # Normalize both to unit norm first to avoid scale issues
+                recon_normed = F.normalize(reconstructed, dim=1)
+                target_normed = F.normalize(msg_pooled.detach(), dim=1)
+                recon_loss = F.mse_loss(recon_normed, target_normed)
+
+                # Collect flattened prefix for diversity loss (keep gradients!)
+                prefix_flat = prefix_embeddings.view(1, -1)  # (1, k*d_model)
+                batch_prefixes.append(prefix_flat)
+
+                # Collect for info preservation loss
+                # msg_pooled is detached (no_grad), latent has gradients
+                batch_msg_pooled.append(msg_pooled.detach())  # (1, d_model)
+                batch_latents.append(latent.view(1, -1))  # (1, k*d_model)
+
+                # === ENCODE WRONG MESSAGE (for contrastive) ===
+                wrong_msg_inputs = tokenizer(
+                    wrong_message,
+                    return_tensors="pt",
+                    truncation=True,
+                    max_length=256,
+                ).to(device)
+
+                with torch.no_grad():
+                    wrong_msg_outputs = model(**wrong_msg_inputs, output_hidden_states=True)
+                    wrong_hidden = wrong_msg_outputs.hidden_states[-1]
+                    # Use last-token pooling for wrong message too
+                    wrong_pooled = get_last_token_embedding(wrong_hidden, wrong_msg_inputs['attention_mask'])
+
+                # Encode wrong message through codec (ignore reconstruction for wrong)
+                wrong_latent, wrong_prefix_embeddings, _ = codec(wrong_pooled)
+
+                # === STUDENT FORWARD WITH CORRECT PREFIX ===
+                student_embeds = model.get_input_embeddings()(student_input_ids)
+                soft_prefix = prefix_embeddings.to(student_embeds.dtype)  # (1, k, d_model)
                 combined_embeds = torch.cat([soft_prefix, student_embeds], dim=1)
 
-                # Attention mask for combined input
-                soft_mask = torch.ones(1, 1, device=device, dtype=student_inputs['attention_mask'].dtype)
-                combined_mask = torch.cat([soft_mask, student_inputs['attention_mask']], dim=1)
+                soft_mask = torch.ones(1, k_prefix, device=device, dtype=student_mask.dtype)
+                combined_mask = torch.cat([soft_mask, student_mask], dim=1)
 
-                # Forward passes
-                with torch.no_grad():
-                    # Teacher forward (frozen, just get logits)
-                    teacher_outputs = model(**teacher_inputs)
-                    teacher_logits = teacher_outputs.logits[:, -1, :]  # Last token prediction
+                student_outputs = model(inputs_embeds=combined_embeds, attention_mask=combined_mask)
+                student_prompt_len = student_prompt_inputs['input_ids'].shape[1] + k_prefix
+                student_logits = student_outputs.logits[:, student_prompt_len-1:-1, :]  # (1, n_answer_tokens, vocab)
 
-                # Student forward (gradient flows through codec)
-                student_outputs = model(
-                    inputs_embeds=combined_embeds,
-                    attention_mask=combined_mask,
-                )
-                student_logits = student_outputs.logits[:, -1, :]  # Last token prediction
+                # === STUDENT FORWARD WITH WRONG PREFIX (for contrastive) ===
+                wrong_soft_prefix = wrong_prefix_embeddings.to(student_embeds.dtype)
+                wrong_combined_embeds = torch.cat([wrong_soft_prefix, student_embeds], dim=1)
 
-                # KL divergence loss: student should match teacher distribution
-                # Use temperature for softer distributions
-                temperature = 2.0
-                teacher_probs = F.softmax(teacher_logits / temperature, dim=-1)
-                student_log_probs = F.log_softmax(student_logits / temperature, dim=-1)
-                kl_loss = F.kl_div(student_log_probs, teacher_probs, reduction='batchmean')
+                wrong_student_outputs = model(inputs_embeds=wrong_combined_embeds, attention_mask=combined_mask)
+                wrong_student_logits = wrong_student_outputs.logits[:, student_prompt_len-1:-1, :]
 
-                # Scale by temperature^2 as per distillation convention
-                kl_loss = kl_loss * (temperature ** 2)
+                # === VALUE-WEIGHTED CROSS-ENTROPY LOSS (correct prefix) ===
+                # Targets are the answer tokens (shifted by 1 for next-token prediction)
+                targets = answer_tensor  # (1, n_answer_tokens)
+                log_probs = F.log_softmax(student_logits, dim=-1)  # (1, n_answer_tokens, vocab)
 
-                batch_loss += kl_loss
-                batch_kl += kl_loss.item()
+                # Gather log probs for correct tokens
+                target_log_probs = log_probs.gather(2, targets.unsqueeze(-1)).squeeze(-1)  # (1, n_answer_tokens)
+
+                # Apply value weights (upweight value tokens)
+                weighted_nll = -target_log_probs * weight_tensor  # (1, n_answer_tokens)
+                ce_loss_pos = weighted_nll.sum() / weight_tensor.sum()  # Normalize by total weight
+
+                # === CE FOR WRONG PREFIX ===
+                wrong_log_probs = F.log_softmax(wrong_student_logits, dim=-1)
+                wrong_target_log_probs = wrong_log_probs.gather(2, targets.unsqueeze(-1)).squeeze(-1)
+                weighted_wrong_nll = -wrong_target_log_probs * weight_tensor
+                ce_loss_neg = weighted_wrong_nll.sum() / weight_tensor.sum()
+
+                # === CONTRASTIVE MARGIN LOSS ===
+                # Want: CE_neg - CE_pos > margin (wrong prefix should make answer harder)
+                # Loss: max(0, margin - (CE_neg - CE_pos))
+                contrastive_loss = F.relu(CONTRASTIVE_MARGIN - (ce_loss_neg - ce_loss_pos))
+
+                # === TOTAL LOSS ===
+                total_loss = (ce_loss_pos +
+                              CONTRASTIVE_WEIGHT * contrastive_loss +
+                              RECONSTRUCTION_WEIGHT * recon_loss)
+
+                batch_loss += total_loss
+                batch_ce += ce_loss_pos.item()
+                batch_contrastive += contrastive_loss.item()
+                batch_recon += recon_loss.item()
+                batch_tokens += n_answer_tokens
                 n_samples += 1
+
+            # === DIVERSITY LOSS (penalize similar prefixes within batch) ===
+            batch_diversity_loss = torch.tensor(0.0, device=device)
+            batch_mean_cosim = 0.0
+            if len(batch_prefixes) >= 2:
+                # Stack all prefixes: (n_samples, k*d_model)
+                prefix_matrix = torch.cat(batch_prefixes, dim=0)
+                # Normalize for cosine similarity
+                prefix_normed = F.normalize(prefix_matrix, dim=1)
+                # Pairwise cosine similarities
+                cosine_sim = torch.mm(prefix_normed, prefix_normed.t())  # (n, n)
+                # Get upper triangular (excluding diagonal)
+                n = cosine_sim.shape[0]
+                mask = torch.triu(torch.ones(n, n, dtype=torch.bool, device=device), diagonal=1)
+                pairwise_sims = cosine_sim[mask]
+                batch_mean_cosim = pairwise_sims.mean().item()  # Track for debugging
+                # Penalize similarities above threshold
+                # Loss = mean(max(0, sim - threshold))
+                diversity_violation = F.relu(pairwise_sims - DIVERSITY_THRESHOLD)
+                batch_diversity_loss = diversity_violation.mean()
+
+            # === INFO PRESERVATION LOSS (force encoder to preserve input similarity structure) ===
+            batch_info_preserve_loss = torch.tensor(0.0, device=device)
+            if len(batch_msg_pooled) >= 2:
+                # Stack inputs and latents
+                input_matrix = torch.cat(batch_msg_pooled, dim=0)  # (n, d_model)
+                latent_matrix = torch.cat(batch_latents, dim=0)  # (n, k*d_model)
+
+                # Compute pairwise cosine similarities
+                input_normed = F.normalize(input_matrix, dim=1)
+                latent_normed = F.normalize(latent_matrix, dim=1)
+
+                input_sim = torch.mm(input_normed, input_normed.t())  # (n, n)
+                latent_sim = torch.mm(latent_normed, latent_normed.t())  # (n, n)
+
+                # Get upper triangular (excluding diagonal)
+                n = input_sim.shape[0]
+                mask = torch.triu(torch.ones(n, n, dtype=torch.bool, device=device), diagonal=1)
+
+                input_pairwise = input_sim[mask]  # Flatten to 1D
+                latent_pairwise = latent_sim[mask]
+
+                # Loss: MSE between input similarities and latent similarities
+                # This forces the encoder to preserve relative distances
+                batch_info_preserve_loss = F.mse_loss(latent_pairwise, input_pairwise.detach())
 
             # Average over batch and backprop
             if n_samples > 0:
-                loss = batch_loss / n_samples
+                loss = (batch_loss / n_samples +
+                        DIVERSITY_WEIGHT * batch_diversity_loss +
+                        INFO_PRESERVE_WEIGHT * batch_info_preserve_loss)
                 optimizer.zero_grad()
                 loss.backward()
+                torch.nn.utils.clip_grad_norm_(codec.parameters(), max_norm=1.0)
                 optimizer.step()
 
                 epoch_loss += loss.item()
-                epoch_kl += batch_kl / n_samples
+                epoch_ce += batch_ce / n_samples
+                epoch_contrastive += batch_contrastive / n_samples
+                epoch_diversity += batch_diversity_loss.item()
+                epoch_recon += batch_recon / n_samples
+                epoch_info_preserve += batch_info_preserve_loss.item()
+                epoch_cosim += batch_mean_cosim  # Track mean cosine similarity
+                epoch_tokens += batch_tokens
                 n_batches += 1
 
         scheduler.step()
         avg_loss = epoch_loss / max(n_batches, 1)
-        avg_kl = epoch_kl / max(n_batches, 1)
+        avg_ce = epoch_ce / max(n_batches, 1)
+        avg_contrastive = epoch_contrastive / max(n_batches, 1)
+        avg_diversity = epoch_diversity / max(n_batches, 1)
+        avg_recon = epoch_recon / max(n_batches, 1)
+        avg_info_preserve = epoch_info_preserve / max(n_batches, 1)
+        avg_cosim = epoch_cosim / max(n_batches, 1)
+        avg_tokens = epoch_tokens / max(n_batches * config.batch_size, 1)
         history['loss'].append(avg_loss)
-        history['kl_loss'].append(avg_kl)
+        history['ce_loss'].append(avg_ce)
+        history['contrastive_loss'].append(avg_contrastive)
+        history['diversity_loss'].append(avg_diversity)
+        history['recon_loss'].append(avg_recon)
+        history['mean_cosim'].append(avg_cosim)
         history['epoch'].append(epoch + 1)
+        history['tokens_per_sample'].append(avg_tokens)
 
-        print(f"  Epoch {epoch+1}: loss={avg_loss:.6f}, kl={avg_kl:.6f}")
+        print(f"  Epoch {epoch+1}: loss={avg_loss:.4f}, ce={avg_ce:.4f}, contrast={avg_contrastive:.4f}, recon={avg_recon:.4f}, info_preserve={avg_info_preserve:.4f}, cosim={avg_cosim:.4f}")
 
     # Save checkpoint
     timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
@@ -370,6 +625,266 @@ ANSWER:"""
         'checkpoint_path': checkpoint_path,
         'history': history,
         'final_loss': history['loss'][-1],
+    }
+
+
+# ============================================================================
+# Diagnostic Checks (run before A100 time)
+# ============================================================================
+
+def run_diagnostics(
+    checkpoint_path: str,
+    config: M2Config,
+    device: str = "cuda",
+    n_samples: int = 20,
+) -> Dict[str, Any]:
+    """
+    Quick diagnostic checks to verify training is learning semantic content.
+
+    1. Prefix collapse check: Are different messages producing similar prefixes?
+    2. Deterministic semantic check: Does correct prefix make answer more likely than shuffle?
+
+    Run this locally before spending A100 time on full training.
+    """
+    import torch
+    import torch.nn.functional as F
+    from transformers import AutoModelForCausalLM, AutoTokenizer
+    import json
+    import re
+
+    print("\n" + "=" * 60)
+    print("DIAGNOSTIC CHECKS")
+    print("=" * 60)
+
+    # Load checkpoint
+    checkpoint = torch.load(checkpoint_path, map_location=device, weights_only=False)
+    k_vectors = checkpoint['k_vectors']
+    d_model = checkpoint['d_model']
+    hidden_dim = checkpoint['hidden_dim']
+
+    print(f"Loaded: k={k_vectors}, d_model={d_model}")
+
+    # Load model and tokenizer
+    print("Loading model...")
+    tokenizer = AutoTokenizer.from_pretrained(config.model_name, trust_remote_code=True)
+    if tokenizer.pad_token is None:
+        tokenizer.pad_token = tokenizer.eos_token
+
+    model = AutoModelForCausalLM.from_pretrained(
+        config.model_name,
+        torch_dtype=torch.float16 if device == "cuda" else torch.float32,
+        device_map="auto" if device == "cuda" else None,
+        trust_remote_code=True,
+    )
+    if device != "cuda":
+        model = model.to(device)
+    model.eval()
+
+    # Recreate codec and load weights
+    codec = create_codec_model(d_model, k_vectors, hidden_dim)
+    codec.load_state_dict(checkpoint['state_dict'])
+    codec = codec.to(device)
+    codec.eval()
+
+    # Load some training samples
+    print(f"Loading {n_samples} samples...")
+    samples = []
+    with open(config.train_data_path, 'r') as f:
+        for i, line in enumerate(f):
+            if i >= n_samples:
+                break
+            sample = json.loads(line)
+            if 'ANSWER' in sample.get('receiver_output', ''):
+                samples.append(sample)
+
+    if len(samples) < 5:
+        print("WARNING: Not enough samples with ANSWER found")
+        return {'error': 'insufficient_samples'}
+
+    print(f"  Found {len(samples)} samples with ANSWER")
+
+    # ========== CHECK 1: PREFIX COLLAPSE ==========
+    print("\n--- Check 1: Prefix Collapse ---")
+    print("Computing prefix embeddings for different messages...")
+
+    prefix_embeddings_list = []
+    pooled_embeddings_list = []
+    latent_embeddings_list = []
+    messages = []
+
+    for sample in samples[:min(20, len(samples))]:
+        msg = sample['sender_message']
+        messages.append(msg)
+
+        # Encode message
+        msg_inputs = tokenizer(msg, return_tensors="pt", truncation=True, max_length=256).to(device)
+        with torch.no_grad():
+            msg_outputs = model(**msg_inputs, output_hidden_states=True)
+            hidden = msg_outputs.hidden_states[-1]
+            # Use last-token pooling for better discrimination
+            pooled = get_last_token_embedding(hidden, msg_inputs['attention_mask'])
+
+            # Get prefix embeddings
+            latent, prefix_emb, _ = codec(pooled)
+            # Flatten k prefix vectors to single vector for comparison
+            prefix_flat = prefix_emb.view(1, -1).cpu()
+            prefix_embeddings_list.append(prefix_flat)
+            pooled_embeddings_list.append(pooled.float().cpu())
+            latent_embeddings_list.append(latent.view(1, -1).float().cpu())
+
+    # Debug: Check pooled embedding similarities
+    pooled_matrix = torch.cat(pooled_embeddings_list, dim=0)
+    pooled_normed = F.normalize(pooled_matrix, dim=1)
+    pooled_sim = torch.mm(pooled_normed, pooled_normed.t())
+    n_p = pooled_sim.shape[0]
+    pooled_mask = ~torch.eye(n_p, dtype=torch.bool)
+    pooled_off_diag = pooled_sim[pooled_mask]
+    print(f"  DEBUG - Pooled embeddings cosim: mean={pooled_off_diag.mean():.4f}, min={pooled_off_diag.min():.4f}, max={pooled_off_diag.max():.4f}")
+
+    # Debug: Check latent similarities (encoder output)
+    latent_matrix = torch.cat(latent_embeddings_list, dim=0)
+    latent_normed = F.normalize(latent_matrix, dim=1)
+    latent_sim = torch.mm(latent_normed, latent_normed.t())
+    n_l = latent_sim.shape[0]
+    latent_mask = ~torch.eye(n_l, dtype=torch.bool)
+    latent_off_diag = latent_sim[latent_mask]
+    print(f"  DEBUG - Latent (encoder output) cosim: mean={latent_off_diag.mean():.4f}, min={latent_off_diag.min():.4f}, max={latent_off_diag.max():.4f}")
+
+    # Compute pairwise cosine similarities
+    prefix_matrix = torch.cat(prefix_embeddings_list, dim=0)  # (n_samples, k*d_model)
+    prefix_normed = F.normalize(prefix_matrix, dim=1)
+    cosine_sim = torch.mm(prefix_normed, prefix_normed.t())
+
+    # Get off-diagonal similarities (excluding self-similarity)
+    n = cosine_sim.shape[0]
+    mask = ~torch.eye(n, dtype=torch.bool)
+    off_diag_sims = cosine_sim[mask]
+
+    mean_sim = off_diag_sims.mean().item()
+    min_sim = off_diag_sims.min().item()
+    max_sim = off_diag_sims.max().item()
+
+    print(f"  Prefix cosine similarity (across different messages):")
+    print(f"    Mean: {mean_sim:.4f}")
+    print(f"    Min:  {min_sim:.4f}")
+    print(f"    Max:  {max_sim:.4f}")
+
+    if mean_sim > 0.95:
+        print("  ⚠️ WARNING: Prefixes are nearly identical (collapse detected)")
+        print("     The codec is learning a constant 'magic prompt', not semantic encoding")
+    elif mean_sim > 0.8:
+        print("  ⚠️ CAUTION: Prefixes are quite similar, limited differentiation")
+    else:
+        print("  ✓ Prefixes show meaningful differentiation")
+
+    # ========== CHECK 2: DETERMINISTIC SEMANTIC CHECK ==========
+    print("\n--- Check 2: Deterministic Semantic Check ---")
+    print("Comparing log-probs: correct prefix vs shuffled prefix vs null")
+
+    correct_nlls = []
+    shuffle_nlls = []
+    null_nlls = []
+
+    for i, sample in enumerate(samples[:min(10, len(samples))]):
+        receiver_context = sample['receiver_context']
+        sender_message = sample['sender_message']
+        receiver_output = sample.get('receiver_output', '')
+
+        # Extract answer
+        match = re.search(r'ANSWER:\s*(\{[^}]+\})', receiver_output)
+        if not match:
+            continue
+
+        answer_text = "ANSWER: " + match.group(1)
+        answer_tokens = tokenizer.encode(answer_text, add_special_tokens=False)
+        answer_tensor = torch.tensor([answer_tokens], device=device)
+
+        # Student prompt
+        student_prompt = f"""{receiver_context}
+
+Your partner sent you encoded information (injected as a learned prefix).
+Based on your constraints and the encoded context, provide an ANSWER.
+"""
+        student_inputs = tokenizer(student_prompt, return_tensors="pt", truncation=True, max_length=512).to(device)
+        student_input_ids = torch.cat([student_inputs['input_ids'], answer_tensor], dim=1)
+
+        # Get correct message embedding and prefix
+        msg_inputs = tokenizer(sender_message, return_tensors="pt", truncation=True, max_length=256).to(device)
+        with torch.no_grad():
+            msg_outputs = model(**msg_inputs, output_hidden_states=True)
+            hidden = msg_outputs.hidden_states[-1]
+            # Use last-token pooling for better discrimination
+            pooled = get_last_token_embedding(hidden, msg_inputs['attention_mask'])
+            latent, correct_prefix, _ = codec(pooled)
+
+        # Get shuffled message prefix (use next sample's message)
+        shuffle_msg = samples[(i + 7) % len(samples)]['sender_message']
+        shuffle_msg_inputs = tokenizer(shuffle_msg, return_tensors="pt", truncation=True, max_length=256).to(device)
+        with torch.no_grad():
+            shuffle_outputs = model(**shuffle_msg_inputs, output_hidden_states=True)
+            shuffle_hidden = shuffle_outputs.hidden_states[-1]
+            # Use last-token pooling for shuffled message
+            shuffle_pooled = get_last_token_embedding(shuffle_hidden, shuffle_msg_inputs['attention_mask'])
+            _, shuffle_prefix, _ = codec(shuffle_pooled)
+
+        # Null prefix (zeros)
+        null_prefix = torch.zeros_like(correct_prefix)
+
+        # Compute NLL for each condition
+        student_embeds = model.get_input_embeddings()(student_input_ids)
+        k_prefix = correct_prefix.shape[1]
+        prompt_len = student_inputs['input_ids'].shape[1] + k_prefix
+
+        for prefix, nll_list in [(correct_prefix, correct_nlls), (shuffle_prefix, shuffle_nlls), (null_prefix, null_nlls)]:
+            soft_prefix = prefix.to(student_embeds.dtype)
+            combined = torch.cat([soft_prefix, student_embeds], dim=1)
+            attn_mask = torch.ones(1, combined.shape[1], device=device)
+
+            with torch.no_grad():
+                outputs = model(inputs_embeds=combined, attention_mask=attn_mask)
+                logits = outputs.logits[:, prompt_len-1:-1, :]
+
+                log_probs = F.log_softmax(logits, dim=-1)
+                target_log_probs = log_probs.gather(2, answer_tensor.unsqueeze(-1)).squeeze(-1)
+                nll = -target_log_probs.mean().item()
+                nll_list.append(nll)
+
+    avg_correct = sum(correct_nlls) / len(correct_nlls) if correct_nlls else 0
+    avg_shuffle = sum(shuffle_nlls) / len(shuffle_nlls) if shuffle_nlls else 0
+    avg_null = sum(null_nlls) / len(null_nlls) if null_nlls else 0
+
+    print(f"  Average NLL (lower = answer more likely):")
+    print(f"    Correct prefix: {avg_correct:.4f}")
+    print(f"    Shuffled prefix: {avg_shuffle:.4f}")
+    print(f"    Null prefix: {avg_null:.4f}")
+
+    gap_shuffle = avg_shuffle - avg_correct
+    gap_null = avg_null - avg_correct
+
+    print(f"\n  Gaps (positive = correct is better):")
+    print(f"    Shuffle gap: {gap_shuffle:.4f}")
+    print(f"    Null gap: {gap_null:.4f}")
+
+    if gap_shuffle > 0.1:
+        print("  ✓ Shuffle makes answer harder - semantic dependence detected!")
+    elif gap_shuffle > 0:
+        print("  ⚠️ Small shuffle gap - weak semantic signal")
+    else:
+        print("  ❌ No shuffle gap - codec not encoding semantic content")
+
+    return {
+        'prefix_collapse': {
+            'mean_cosine_sim': mean_sim,
+            'min_sim': min_sim,
+            'max_sim': max_sim,
+        },
+        'semantic_check': {
+            'correct_nll': avg_correct,
+            'shuffle_nll': avg_shuffle,
+            'null_nll': avg_null,
+            'shuffle_gap': gap_shuffle,
+            'null_gap': gap_null,
+        }
     }
 
 
@@ -644,8 +1159,8 @@ Start with "MESSAGE:" followed by the key information from your observation."""
     with torch.no_grad():
         msg_outputs = model(**msg_inputs, output_hidden_states=True)
         hidden = msg_outputs.hidden_states[-1]
-        mask = msg_inputs['attention_mask'].unsqueeze(-1).float()
-        pooled = (hidden * mask).sum(dim=1) / mask.sum(dim=1)
+        # Use last-token pooling for better discrimination
+        pooled = get_last_token_embedding(hidden, msg_inputs['attention_mask'])
 
         # Apply ablation to latent
         if ablation == 'null':
@@ -656,8 +1171,9 @@ Start with "MESSAGE:" followed by the key information from your observation."""
             # Normal or shuffle: use actual codec encoding
             latent = codec.encode(pooled)
 
-        # Decode to prefix embedding
-        prefix_embedding = codec.decode(latent)  # Shape: (1, d_model)
+        # Decode to k prefix embeddings
+        prefix_embeddings = codec.decode(latent)  # Shape: (1, k, d_model)
+        k_prefix = prefix_embeddings.shape[1]
 
     # P1 FIX: Agent B prompt NEVER contains message_A for latent conditions
     # This is the NO TEXT LEAK guarantee
@@ -671,21 +1187,20 @@ Based on your observation and the encoded context, provide an ANSWER.
 
 ANSWER in format {{"x1": <value>, "x2": <value>, "x3": <value>, "x4": <value>}}:"""
 
-    # P1 FIX: Actually inject prefix_embedding via inputs_embeds
+    # P1 FIX: Actually inject prefix_embeddings via inputs_embeds
     inputs_B = tokenizer(prompt_B, return_tensors="pt").to(device)
 
     # Get input embeddings for prompt
     input_embeds_B = model.get_input_embeddings()(inputs_B['input_ids'])
 
-    # Expand prefix_embedding to match expected shape (1, 1, d_model) -> prepend as soft token
-    # Cast to model dtype (float16 on CUDA)
-    soft_prefix = prefix_embedding.unsqueeze(1).to(input_embeds_B.dtype)  # (1, 1, d_model)
+    # Cast k prefix embeddings to model dtype (float16 on CUDA)
+    soft_prefix = prefix_embeddings.to(input_embeds_B.dtype)  # (1, k, d_model)
 
-    # Concatenate: [soft_prefix, prompt_embeddings]
+    # Concatenate: [soft_prefix (k tokens), prompt_embeddings]
     combined_embeds = torch.cat([soft_prefix, input_embeds_B], dim=1)
 
-    # Create attention mask for combined input
-    soft_mask = torch.ones(1, 1, device=device, dtype=inputs_B['attention_mask'].dtype)
+    # Create attention mask for combined input (k prefix tokens + prompt)
+    soft_mask = torch.ones(1, k_prefix, device=device, dtype=inputs_B['attention_mask'].dtype)
     combined_mask = torch.cat([soft_mask, inputs_B['attention_mask']], dim=1)
 
     # P2 FIX: Deterministic generation for Agent B (paired comparisons)
@@ -1167,6 +1682,10 @@ def main():
                         help="Run plumbing proof on a trained checkpoint to verify injection works")
     parser.add_argument("--plumbing-episodes", type=int, default=10,
                         help="Number of episodes for plumbing proof (default: 10)")
+    parser.add_argument("--diagnostics", type=str, metavar="CHECKPOINT",
+                        help="Run diagnostic checks on a checkpoint (prefix collapse + semantic check)")
+    parser.add_argument("--diagnostics-samples", type=int, default=20,
+                        help="Number of samples for diagnostics (default: 20)")
 
     args = parser.parse_args()
 
@@ -1195,6 +1714,24 @@ def main():
             }
             json.dump(result_json, f, indent=2)
         print(f"\nResults saved to: {proof_path}")
+        return
+
+    # Diagnostics mode
+    if args.diagnostics:
+        config = M2Config(k_vectors=args.k, train_data_path=args.data)
+        result = run_diagnostics(
+            checkpoint_path=args.diagnostics,
+            config=config,
+            device=args.device,
+            n_samples=args.diagnostics_samples,
+        )
+
+        # Save results
+        import json
+        diag_path = args.diagnostics.replace('.pt', '_diagnostics.json')
+        with open(diag_path, 'w') as f:
+            json.dump(result, f, indent=2)
+        print(f"\nDiagnostics saved to: {diag_path}")
         return
 
     if args.sweep:
