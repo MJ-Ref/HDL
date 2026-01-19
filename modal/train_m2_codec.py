@@ -474,8 +474,9 @@ Based on your constraints and the encoded context, provide an ANSWER.
                 # Reconstruction loss: force encoder to retain message-specific info
                 # Use MSE loss - stricter than cosine similarity, forces exact reconstruction
                 # Normalize both to unit norm first to avoid scale issues
+                # Cast target to float32 to match codec output
                 recon_normed = F.normalize(reconstructed, dim=1)
-                target_normed = F.normalize(msg_pooled.detach(), dim=1)
+                target_normed = F.normalize(msg_pooled.detach().float(), dim=1)
                 recon_loss = F.mse_loss(recon_normed, target_normed)
 
                 # Collect flattened prefix for diversity loss (keep gradients!)
@@ -484,7 +485,8 @@ Based on your constraints and the encoded context, provide an ANSWER.
 
                 # Collect for info preservation loss
                 # msg_pooled is detached (no_grad), latent has gradients
-                batch_msg_pooled.append(msg_pooled.detach())  # (1, d_model)
+                # Cast to float32 to match codec output
+                batch_msg_pooled.append(msg_pooled.detach().float())  # (1, d_model)
                 batch_latents.append(latent.view(1, -1))  # (1, k*d_model)
 
                 # === ENCODE WRONG MESSAGE (for contrastive) ===
