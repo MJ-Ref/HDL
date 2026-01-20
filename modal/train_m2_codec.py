@@ -321,7 +321,7 @@ def train_codec(
     # Key insight: KL over "ANSWER: {"x1": 0, ...}" is dominated by formatting tokens
     # Solution: Upweight value tokens (actual digits) + contrastive term for shuffle
     # CRITICAL: Reconstruction loss forces encoder to retain message-specific information
-    history = {'loss': [], 'ce_loss': [], 'contrastive_loss': [], 'diversity_loss': [], 'recon_loss': [], 'mean_cosim': [], 'epoch': [], 'tokens_per_sample': []}
+    history = {'loss': [], 'ce_loss': [], 'contrastive_loss': [], 'diversity_loss': [], 'recon_loss': [], 'help_loss': [], 'mean_cosim': [], 'epoch': [], 'tokens_per_sample': []}
 
     import re
 
@@ -373,6 +373,8 @@ def train_codec(
     DIVERSITY_THRESHOLD = 0.5  # N/A when weight is 0
     RECONSTRUCTION_WEIGHT = 20.0  # Strong - helps with input-dependent encoding
     INFO_PRESERVE_WEIGHT = 10.0  # Force encoder to preserve pairwise input similarities
+    HELP_MARGIN = 0.2  # Correct prefix should be better than null by this margin (value-weighted NLL)
+    HELP_WEIGHT = 1.0  # Weight for help loss: enforces correct > null
 
     for epoch in range(config.epochs):
         codec.train()
@@ -382,6 +384,7 @@ def train_codec(
         epoch_diversity = 0
         epoch_recon = 0  # Track reconstruction loss
         epoch_info_preserve = 0  # Track info preservation loss
+        epoch_help = 0  # Track help loss (correct > null)
         epoch_cosim = 0  # Track mean cosine similarity for debugging
         epoch_tokens = 0
         n_batches = 0
@@ -396,6 +399,7 @@ def train_codec(
             batch_ce = 0
             batch_contrastive = 0
             batch_recon = 0
+            batch_help = 0  # Track help loss within batch
             batch_tokens = 0
             n_samples = 0
             batch_prefixes = []  # Collect prefixes for diversity loss
@@ -548,15 +552,37 @@ Based on your constraints and the encoded context, provide an ANSWER.
                 # Loss: max(0, margin - (CE_neg - CE_pos))
                 contrastive_loss = F.relu(CONTRASTIVE_MARGIN - (ce_loss_neg - ce_loss_pos))
 
+                # === HELP LOSS (correct > null) ===
+                # Forward pass with null prefix (zeros)
+                null_prefix = torch.zeros_like(prefix_embeddings)
+                null_soft_prefix = null_prefix.to(student_embeds.dtype)
+                null_combined_embeds = torch.cat([null_soft_prefix, student_embeds], dim=1)
+
+                null_student_outputs = model(inputs_embeds=null_combined_embeds, attention_mask=combined_mask)
+                null_student_logits = null_student_outputs.logits[:, student_prompt_len-1:-1, :]
+
+                # Compute value-weighted NLL for null
+                null_log_probs = F.log_softmax(null_student_logits, dim=-1)
+                null_target_log_probs = null_log_probs.gather(2, targets.unsqueeze(-1)).squeeze(-1)
+                weighted_null_nll = -null_target_log_probs * weight_tensor
+                ce_loss_null = weighted_null_nll.sum() / weight_tensor.sum()
+
+                # Want: ce_loss_pos < ce_loss_null (correct prefix should be BETTER than null)
+                # Loss: max(0, ce_loss_pos - ce_loss_null + margin)
+                # This is zero when correct is better than null by at least margin
+                help_loss = F.relu(ce_loss_pos - ce_loss_null + HELP_MARGIN)
+
                 # === TOTAL LOSS ===
                 total_loss = (ce_loss_pos +
                               CONTRASTIVE_WEIGHT * contrastive_loss +
-                              RECONSTRUCTION_WEIGHT * recon_loss)
+                              RECONSTRUCTION_WEIGHT * recon_loss +
+                              HELP_WEIGHT * help_loss)
 
                 batch_loss += total_loss
                 batch_ce += ce_loss_pos.item()
                 batch_contrastive += contrastive_loss.item()
                 batch_recon += recon_loss.item()
+                batch_help += help_loss.item()
                 batch_tokens += n_answer_tokens
                 n_samples += 1
 
@@ -620,6 +646,7 @@ Based on your constraints and the encoded context, provide an ANSWER.
                 epoch_contrastive += batch_contrastive / n_samples
                 epoch_diversity += batch_diversity_loss.item()
                 epoch_recon += batch_recon / n_samples
+                epoch_help += batch_help / n_samples
                 epoch_info_preserve += batch_info_preserve_loss.item()
                 epoch_cosim += batch_mean_cosim  # Track mean cosine similarity
                 epoch_tokens += batch_tokens
@@ -631,6 +658,7 @@ Based on your constraints and the encoded context, provide an ANSWER.
         avg_contrastive = epoch_contrastive / max(n_batches, 1)
         avg_diversity = epoch_diversity / max(n_batches, 1)
         avg_recon = epoch_recon / max(n_batches, 1)
+        avg_help = epoch_help / max(n_batches, 1)
         avg_info_preserve = epoch_info_preserve / max(n_batches, 1)
         avg_cosim = epoch_cosim / max(n_batches, 1)
         avg_tokens = epoch_tokens / max(n_batches * config.batch_size, 1)
@@ -639,11 +667,12 @@ Based on your constraints and the encoded context, provide an ANSWER.
         history['contrastive_loss'].append(avg_contrastive)
         history['diversity_loss'].append(avg_diversity)
         history['recon_loss'].append(avg_recon)
+        history['help_loss'].append(avg_help)
         history['mean_cosim'].append(avg_cosim)
         history['epoch'].append(epoch + 1)
         history['tokens_per_sample'].append(avg_tokens)
 
-        print(f"  Epoch {epoch+1}: loss={avg_loss:.4f}, ce={avg_ce:.4f}, contrast={avg_contrastive:.4f}, recon={avg_recon:.4f}, info_preserve={avg_info_preserve:.4f}, cosim={avg_cosim:.4f}")
+        print(f"  Epoch {epoch+1}: loss={avg_loss:.4f}, ce={avg_ce:.4f}, contrast={avg_contrastive:.4f}, help={avg_help:.4f}, recon={avg_recon:.4f}, cosim={avg_cosim:.4f}")
 
     # Save checkpoint
     timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
@@ -1268,6 +1297,83 @@ def evaluate_codec(
             'expected': 'below_p0',  # Should crater below P0
         }
         print(f"  Shuffle: {shuffle_rate:.1%} ({shuffle_success}/{n_episodes}) [expected < {config.p0_baseline:.0%}]")
+
+        # === GATE SWEEP: Test different scale_gate values ===
+        # This reveals if we're capacity-limited (higher gate helps) or need better content
+        print("\n--- Gate Sweep (testing different scale_gate values) ---")
+        original_gate = codec.scale_gate.item()
+        gate_values = [0.0, 0.25, 0.5, 0.75, 1.0, 1.5]
+        gate_results = {}
+
+        for gate_val in gate_values:
+            with torch.no_grad():
+                codec.scale_gate.fill_(gate_val)
+
+            gate_success = 0
+            for seed in seed_list[:20]:  # Use subset for speed
+                success = _run_codec_episode(
+                    seed=seed,
+                    model=model,
+                    tokenizer=tokenizer,
+                    codec=codec,
+                    device=device,
+                    temperature=config.temperature,
+                    ablation='normal',
+                    message_cache=message_cache,
+                    seed_list=seed_list,
+                )
+                if success:
+                    gate_success += 1
+            gate_rate = gate_success / 20
+            gate_results[gate_val] = gate_rate
+            print(f"  scale_gate={gate_val:.2f}: {gate_rate:.1%} ({gate_success}/20)")
+
+        # Restore original gate
+        with torch.no_grad():
+            codec.scale_gate.fill_(original_gate)
+
+        results['gate_sweep'] = gate_results
+
+        # === COMMUNICATION-MATTERS SUBSET ===
+        # Report results on episodes where P1 succeeds but Null fails
+        # These are the episodes where communication actually matters
+        print("\n--- Communication-Matters Subset ---")
+        print("(Episodes where text communication helps - i.e., P1-solvable)")
+
+        # Count episodes where null failed but normal succeeded
+        comm_matters_seeds = []
+        for seed in seed_list:
+            # Run null
+            null_success = _run_codec_episode(
+                seed=seed, model=model, tokenizer=tokenizer, codec=codec,
+                device=device, temperature=config.temperature,
+                ablation='null', message_cache=message_cache, seed_list=seed_list,
+            )
+            # Run normal (restore gate first)
+            with torch.no_grad():
+                codec.scale_gate.fill_(original_gate)
+            normal_success = _run_codec_episode(
+                seed=seed, model=model, tokenizer=tokenizer, codec=codec,
+                device=device, temperature=config.temperature,
+                ablation='normal', message_cache=message_cache, seed_list=seed_list,
+            )
+            if not null_success:  # Null failed = communication matters
+                comm_matters_seeds.append((seed, normal_success))
+
+        n_comm_matters = len(comm_matters_seeds)
+        n_helped = sum(1 for _, success in comm_matters_seeds if success)
+        if n_comm_matters > 0:
+            help_rate = n_helped / n_comm_matters
+            print(f"  Episodes where Null fails: {n_comm_matters}/{n_episodes}")
+            print(f"  Normal success on Null-failing episodes: {help_rate:.1%} ({n_helped}/{n_comm_matters})")
+            results['comm_matters'] = {
+                'n_episodes': n_comm_matters,
+                'normal_successes': n_helped,
+                'help_rate': help_rate,
+            }
+        else:
+            print(f"  No episodes where Null fails (all solvable without communication)")
+            results['comm_matters'] = {'n_episodes': 0, 'note': 'all solvable without communication'}
 
     return results
 
