@@ -170,9 +170,9 @@ def create_codec_model(d_model: int, k_vectors: int, hidden_dim: int = 512):
             # LayerNorm ensures output vectors have normalized scale
             self.prefix_norm = nn.LayerNorm(d_model)
 
-            # Learned scale gate: starts small (0.1) so initial prefixes are near-null
-            # This lets training gradually "turn on" the prefix influence
-            self.scale_gate = nn.Parameter(torch.tensor(0.1))
+            # Learned scale gate: starts moderate (0.5) so prefixes have influence
+            # Previous 0.1 was too conservative - prefixes had no effect on model
+            self.scale_gate = nn.Parameter(torch.tensor(0.5))
 
             # Target norm: will be set from model's token embeddings during first forward
             self.register_buffer('target_norm', torch.tensor(1.0))
