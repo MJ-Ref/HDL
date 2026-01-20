@@ -1,10 +1,10 @@
 # LPCA: Latent-Path Communication for AI Agents
 ## Research Plan & Technical Specification
 
-**Version:** 1.9
-**Status:** M2-SCALE Prefix Collapse FIXED - Semantic signal detected (shuffle gap = 0.47)
+**Version:** 2.0
+**Status:** Semantic signal detected - Shuffle craters 10 points below Normal (16% vs 26%)
 **Target Venues:** NeurIPS 2026, ICML 2026, ICLR 2027
-**Last Updated:** January 19, 2026
+**Last Updated:** January 20, 2026
 
 ### Progress Update
 - **M1 COMPLETE:** Raw latent communication (E0, A0) does NOT work without training
@@ -13,11 +13,37 @@
 - **M2-LOCAL-PROTO:** PASSED - codec pipeline validated
 - **E5 Safety:** All metrics passed (compliance gap 17.5%, covert channel 8 bits)
 - **E2-min COMPLETE:** P5 (structured) dominates P2 at all budgets; P5_16B=56.7% at 43 bits
-- **M2-SCALE Gate 1:** ⚠️ **FAIL** - KL distillation shows Normal=28%, but Shuffle=28% (no semantic dependence)
-- **Prefix Collapse:** ✓ **FIXED** - Shuffle gap = 0.47 (semantic signal detected!)
-- **Next:** Train longer, calibrate prefix embeddings, run full Gate 1 evaluation on Modal A100
+- **Prefix Collapse:** ✓ **FIXED** via identity decoder + prefix calibration
+- **Semantic Signal:** ✓ **DETECTED** - Normal (26%) > Shuffle (16%) by 10 points!
+- **M2-SCALE Gate 1:** ⚠️ **FAIL** - Normal=26% below threshold (30%), and Normal=Null
+- **Next:** Need prefix to HELP (Normal > Null), not just "not hurt"
 
-### Latest Findings (January 16, 2026)
+### Latest Findings (January 20, 2026)
+
+**Prefix Calibration Results (scale_gate=0.5, 10 epochs):**
+| Condition | Success Rate | Analysis |
+|-----------|-------------|----------|
+| Normal    | 26.0%       | Baseline with correct prefix |
+| Null      | 26.0%       | No prefix = same as Normal |
+| Random    | 28.0%       | Random prefix = slightly better |
+| Shuffle   | **16.0%**   | Wrong prefix HURTS (-10 points!) |
+
+**Key Insight:** The codec now encodes semantic information:
+- Normal > Shuffle by 10 percentage points (semantic signal!)
+- BUT: Normal = Null (correct prefix doesn't HELP, just doesn't hurt)
+- The model learned "wrong info hurts" but not "right info helps"
+
+**What's Working:**
+1. Prefix collapse fixed - diversity maintained (cosim ~0.72)
+2. Semantic encoding working - shuffle craters below P0
+3. Prefix calibration (LayerNorm + scale_gate) prevents OOD embeddings
+
+**What Needs Fixing:**
+1. Normal should be > Null (correct prefix should actively help)
+2. The contrastive loss forces correct > shuffle, but doesn't push correct > null
+3. Need additional loss term: `L_help = max(0, NLL_null - NLL_correct + margin)`
+
+### Previous Findings (January 16, 2026)
 
 **Multi-token KL Distillation Results:**
 | Condition | Single-Prefix | k=4 Prefix |
