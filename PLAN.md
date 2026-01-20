@@ -1,8 +1,8 @@
 # LPCA: Latent-Path Communication for AI Agents
 ## Research Plan & Technical Specification
 
-**Version:** 2.1
-**Status:** ❌ BLOCKED - Frozen LLM cannot use soft-prefix injections
+**Version:** 2.2
+**Status:** ⚠️ Rerunning eval after fixing null baseline inconsistency
 **Target Venues:** NeurIPS 2026, ICML 2026, ICLR 2027
 **Last Updated:** January 20, 2026
 
@@ -15,10 +15,10 @@
 - **E2-min COMPLETE:** P5 (structured) dominates P2 at all budgets; P5_16B=56.7% at 43 bits
 - **Prefix Collapse:** ✓ **FIXED** via identity decoder + prefix calibration
 - **Semantic Signal:** ✓ **DETECTED** - Normal (26%) > Shuffle (16%) by 10 points!
-- **M2-SCALE Gate 1:** ❌ **FAIL** - Normal (24%) < Null (28%) - codec HURTS performance
-- **L_help Loss:** ❌ **FAILED** - Training converged but evaluation shows no improvement
-- **Root Cause:** Frozen LLM was never trained to attend to soft-prefix injections
-- **Next:** Need architectural change - either fine-tune LLM or use different injection mechanism
+- **M2-SCALE Gate 1:** ⚠️ **INVALID** - Eval had null baseline bug (see below)
+- **L_help Loss:** ⚠️ **RERUNNING** - Previous eval invalid due to null inconsistency
+- **Bug Found:** Eval null used `codec.decode(0)` with LayerNorm bias ≠ training null (true zeros)
+- **Next:** Rerunning eval with fixed null baseline
 
 ### Latest Findings (January 20, 2026)
 
@@ -45,24 +45,29 @@
 - Mean cosine similarity: ~0.69 (some diversity)
 - But evaluation shows Normal < Null
 
-**Critical Finding: Fundamental Architecture Problem**
+**Critical Finding: Evaluation Bug (Fixed January 20, 2026)**
 
-The frozen LLM cannot effectively use soft-prefix injections because:
-1. It was never trained with soft-prefix tokens
-2. It doesn't know how to attend to injected embeddings
-3. Even "correct" prefixes interfere with normal processing
-4. Gate sweep shows prefix scale doesn't matter (0.0 → 1.5 all identical)
+The previous eval results were INVALID due to null baseline inconsistency:
+- **Training null:** `torch.zeros_like(prefix_embeddings)` = actual zeros
+- **Eval null:** `codec.decode(torch.zeros(...))` = LayerNorm bias ≠ zeros
 
-**Evidence:**
-- Normal (24%) < Null (28%) = adding any prefix hurts
-- All conditions (Null, Random, Shuffle) = 28% = no semantic differentiation
-- L_help loss converged during training (teacher-forcing) but failed at inference (autoregressive)
+This means all ablation baselines (Null, Random) had a learned constant bias leaking through,
+making L_help "converge" while inference showed no gain. The flat 28% across all conditions
+was consistent with a constant learned soft-prompt, NOT evidence that "frozen LLM can't use prefixes".
 
-**What Needs to Change:**
-1. **Fine-tune the LLM** (LoRA/QLoRA) to attend to prefix tokens
-2. **Use in-context learning** - actual text tokens instead of soft prefixes
-3. **Try adapter-based injection** - cross-attention rather than concatenation
-4. **Rethink architecture** - receiver model may need training
+**Fix Applied:**
+```python
+# OLD (buggy):
+if ablation == 'null':
+    latent = torch.zeros(1, codec.k, codec.d, device=device)
+prefix_embeddings = codec.decode(latent)  # LayerNorm bias != 0!
+
+# NEW (fixed):
+if ablation == 'null':
+    prefix_embeddings = torch.zeros(1, codec.k, codec.d, device=device)  # True zeros
+```
+
+**Status:** Rerunning eval with fixed null baseline to get valid results.
 
 **Previous Findings (before L_help):**
 | Condition | Success Rate | Analysis |
@@ -904,11 +909,11 @@ Safety Evaluation: [████░░░░░░░░░░░░░░░░
 - **M1:** ✅ Complete - Negative result: raw latent doesn't work without training
 - **M4:** ✅ E5 Complete - Safety metrics all passed
 - **M2-LOCAL-PROTO:** ✅ Complete - Pipeline validated locally
-- **M2-SCALE Gate 1:** ❌ **BLOCKED** - Frozen LLM cannot use soft prefixes
-  - Normal (24%) < Null (28%) with L_help loss
-  - Gate sweep shows no effect of prefix scale
-  - Fundamental architecture change needed
-- **Next:** Decide on pivot strategy (fine-tune LLM, in-context learning, or adapters)
+- **M2-SCALE Gate 1:** ⚠️ **RERUNNING** - Previous results invalid due to null baseline bug
+  - Bug: Eval null used `codec.decode(0)` with LayerNorm bias ≠ training null (true zeros)
+  - Fix applied: Eval null now uses actual zeros to match training
+  - Retraining + eval in progress on Modal A100
+- **Next:** Await valid eval results with fixed null baseline
 
 ---
 

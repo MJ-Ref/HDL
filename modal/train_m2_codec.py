@@ -674,9 +674,14 @@ Based on your constraints and the encoded context, provide an ANSWER.
 
         print(f"  Epoch {epoch+1}: loss={avg_loss:.4f}, ce={avg_ce:.4f}, contrast={avg_contrastive:.4f}, help={avg_help:.4f}, recon={avg_recon:.4f}, cosim={avg_cosim:.4f}")
 
-    # Save checkpoint
+    # Save checkpoint (use /data volume on Modal for persistence)
     timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
-    checkpoint_path = f"checkpoints/m2_codec_k{config.k_vectors}_{timestamp}.pt"
+    if Path("/data").exists():
+        # Modal: save to persistent volume
+        checkpoint_path = f"/data/checkpoints/m2_codec_k{config.k_vectors}_{timestamp}.pt"
+    else:
+        # Local: save to local checkpoints dir
+        checkpoint_path = f"checkpoints/m2_codec_k{config.k_vectors}_{timestamp}.pt"
     Path(checkpoint_path).parent.mkdir(parents=True, exist_ok=True)
 
     torch.save({
@@ -1476,18 +1481,22 @@ Start with "MESSAGE:" followed by the key information from your observation."""
         # Use last-token pooling for better discrimination
         pooled = get_last_token_embedding(hidden, msg_inputs['attention_mask'])
 
-        # Apply ablation to latent
+        # Apply ablation to latent/prefix
+        # CRITICAL: null must use actual zeros (not decode(0) which has LayerNorm bias)
+        # This matches training where null_prefix = torch.zeros_like(prefix_embeddings)
         if ablation == 'null':
-            latent = torch.zeros(1, codec.k, codec.d, device=device)
+            # Direct zero embeddings - matches training null exactly
+            prefix_embeddings = torch.zeros(1, codec.k, codec.d, device=device)
         elif ablation == 'random':
+            # Random latent through decoder (tests if decoder structure matters)
             latent = torch.randn(1, codec.k, codec.d, device=device)
+            prefix_embeddings = codec.decode(latent)
         else:
-            # Normal or shuffle: use actual codec encoding
+            # Normal or shuffle: use actual codec encoding + decoding
             latent = codec.encode(pooled.float())
+            prefix_embeddings = codec.decode(latent)
 
-        # Decode to k prefix embeddings
-        prefix_embeddings = codec.decode(latent)  # Shape: (1, k, d_model)
-        k_prefix = prefix_embeddings.shape[1]
+        k_prefix = codec.k
 
     # P1 FIX: Agent B prompt NEVER contains message_A for latent conditions
     # This is the NO TEXT LEAK guarantee
@@ -1966,13 +1975,30 @@ if MODAL_AVAILABLE:
         image=image,
         volumes={"/data": volume},
     )
-    def train_on_modal(k: int, epochs: int, data_path: str = "/data/m2_train.jsonl") -> Dict:
-        """Train codec on Modal A100."""
+    def train_on_modal(k: int, epochs: int, data_path: str = "/data/m2_train.jsonl",
+                       eval_only: str = None, eval_episodes: int = 50) -> Dict:
+        """Train codec on Modal A100, or run eval-only on existing checkpoint."""
         config = M2Config(
             k_vectors=k,
             epochs=epochs,
             train_data_path=data_path,
+            eval_episodes=eval_episodes,
         )
+
+        if eval_only:
+            # Eval-only mode
+            eval_result = evaluate_codec(
+                eval_only,
+                config,
+                device="cuda",
+            )
+            gates = check_gates(eval_result, config)
+            return {
+                'k': k,
+                'eval': eval_result,
+                'gates': gates,
+                'eval_only': True,
+            }
 
         # Train
         train_result = train_codec(config, device="cuda")
@@ -2015,6 +2041,10 @@ def main():
                         help="Run diagnostic checks on a checkpoint (prefix collapse + semantic check)")
     parser.add_argument("--diagnostics-samples", type=int, default=20,
                         help="Number of samples for diagnostics (default: 20)")
+    parser.add_argument("--eval-only", type=str, metavar="CHECKPOINT",
+                        help="Run evaluation only on a checkpoint (no training)")
+    parser.add_argument("--eval-episodes", type=int, default=50,
+                        help="Number of episodes for evaluation (default: 50)")
 
     args = parser.parse_args()
 
@@ -2061,6 +2091,37 @@ def main():
         with open(diag_path, 'w') as f:
             json.dump(result, f, indent=2)
         print(f"\nDiagnostics saved to: {diag_path}")
+        return
+
+    # Eval-only mode
+    if args.eval_only:
+        if args.local:
+            config = M2Config(k_vectors=args.k, eval_episodes=args.eval_episodes)
+            eval_result = evaluate_codec(
+                checkpoint_path=args.eval_only,
+                config=config,
+                device=args.device,
+            )
+            gates = check_gates(eval_result, config)
+
+            # Save results
+            import json
+            eval_path = args.eval_only.replace('.pt', '_eval.json')
+            with open(eval_path, 'w') as f:
+                json.dump({'eval': eval_result, 'gates': gates}, f, indent=2, default=str)
+            print(f"\nEval results saved to: {eval_path}")
+        else:
+            # Run on Modal
+            if not MODAL_AVAILABLE:
+                print("Modal not available. Install with: pip install modal")
+                sys.exit(1)
+            with app.run():
+                result = train_on_modal.remote(
+                    args.k, 0, "/data/m2_train.jsonl",
+                    eval_only=args.eval_only,
+                    eval_episodes=args.eval_episodes,
+                )
+                print(f"\nResult: {result}")
         return
 
     if args.sweep:
