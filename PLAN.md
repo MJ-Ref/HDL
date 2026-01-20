@@ -1,8 +1,8 @@
 # LPCA: Latent-Path Communication for AI Agents
 ## Research Plan & Technical Specification
 
-**Version:** 2.0
-**Status:** Semantic signal detected - Shuffle craters 10 points below Normal (16% vs 26%)
+**Version:** 2.1
+**Status:** ❌ BLOCKED - Frozen LLM cannot use soft-prefix injections
 **Target Venues:** NeurIPS 2026, ICML 2026, ICLR 2027
 **Last Updated:** January 20, 2026
 
@@ -15,12 +15,56 @@
 - **E2-min COMPLETE:** P5 (structured) dominates P2 at all budgets; P5_16B=56.7% at 43 bits
 - **Prefix Collapse:** ✓ **FIXED** via identity decoder + prefix calibration
 - **Semantic Signal:** ✓ **DETECTED** - Normal (26%) > Shuffle (16%) by 10 points!
-- **M2-SCALE Gate 1:** ⚠️ **FAIL** - Normal=26% below threshold (30%), and Normal=Null
-- **Next:** Need prefix to HELP (Normal > Null), not just "not hurt"
+- **M2-SCALE Gate 1:** ❌ **FAIL** - Normal (24%) < Null (28%) - codec HURTS performance
+- **L_help Loss:** ❌ **FAILED** - Training converged but evaluation shows no improvement
+- **Root Cause:** Frozen LLM was never trained to attend to soft-prefix injections
+- **Next:** Need architectural change - either fine-tune LLM or use different injection mechanism
 
 ### Latest Findings (January 20, 2026)
 
-**Prefix Calibration Results (scale_gate=0.5, 10 epochs):**
+**L_help Loss Training Results (10 epochs with help loss):**
+| Condition | Success Rate | Analysis |
+|-----------|-------------|----------|
+| Normal    | **24.0%**   | WORSE than Null - codec hurts! |
+| Null      | 28.0%       | No prefix = best performance |
+| Random    | 28.0%       | Random = same as Null |
+| Shuffle   | 28.0%       | Shuffle = same as Null |
+
+**Gate Sweep Results (all identical):**
+| scale_gate | Success Rate |
+|------------|--------------|
+| 0.00       | 25.0%        |
+| 0.25       | 25.0%        |
+| 0.50       | 25.0%        |
+| 0.75       | 25.0%        |
+| 1.00       | 25.0%        |
+| 1.50       | 25.0%        |
+
+**Training Metrics (L_help converged but didn't help):**
+- Help loss: 0.71 → 0.05 over 10 epochs (converged)
+- Mean cosine similarity: ~0.69 (some diversity)
+- But evaluation shows Normal < Null
+
+**Critical Finding: Fundamental Architecture Problem**
+
+The frozen LLM cannot effectively use soft-prefix injections because:
+1. It was never trained with soft-prefix tokens
+2. It doesn't know how to attend to injected embeddings
+3. Even "correct" prefixes interfere with normal processing
+4. Gate sweep shows prefix scale doesn't matter (0.0 → 1.5 all identical)
+
+**Evidence:**
+- Normal (24%) < Null (28%) = adding any prefix hurts
+- All conditions (Null, Random, Shuffle) = 28% = no semantic differentiation
+- L_help loss converged during training (teacher-forcing) but failed at inference (autoregressive)
+
+**What Needs to Change:**
+1. **Fine-tune the LLM** (LoRA/QLoRA) to attend to prefix tokens
+2. **Use in-context learning** - actual text tokens instead of soft prefixes
+3. **Try adapter-based injection** - cross-attention rather than concatenation
+4. **Rethink architecture** - receiver model may need training
+
+**Previous Findings (before L_help):**
 | Condition | Success Rate | Analysis |
 |-----------|-------------|----------|
 | Normal    | 26.0%       | Baseline with correct prefix |
@@ -28,20 +72,7 @@
 | Random    | 28.0%       | Random prefix = slightly better |
 | Shuffle   | **16.0%**   | Wrong prefix HURTS (-10 points!) |
 
-**Key Insight:** The codec now encodes semantic information:
-- Normal > Shuffle by 10 percentage points (semantic signal!)
-- BUT: Normal = Null (correct prefix doesn't HELP, just doesn't hurt)
-- The model learned "wrong info hurts" but not "right info helps"
-
-**What's Working:**
-1. Prefix collapse fixed - diversity maintained (cosim ~0.72)
-2. Semantic encoding working - shuffle craters below P0
-3. Prefix calibration (LayerNorm + scale_gate) prevents OOD embeddings
-
-**What Needs Fixing:**
-1. Normal should be > Null (correct prefix should actively help)
-2. The contrastive loss forces correct > shuffle, but doesn't push correct > null
-3. Need additional loss term: `L_help = max(0, NLL_null - NLL_correct + margin)`
+The shuffle signal (16% < 26%) suggested semantic encoding was working, but this may have been noise or the codec learning to output "bad" prefixes for wrong messages rather than "good" prefixes for correct ones.
 
 ### Previous Findings (January 16, 2026)
 
@@ -430,7 +461,7 @@ untrained activations. M2 trains a codec to create semantically meaningful laten
 
 ---
 
-#### M2-SCALE: Full Training (Requires Cloud GPUs) ⚠️ Gate 1 INVALID
+#### M2-SCALE: Full Training (Requires Cloud GPUs) ❌ BLOCKED
 
 **Purpose:** Train high-quality codec with full sweeps once pipeline is validated.
 
@@ -868,13 +899,16 @@ Week 21-24: [░░░░░░░░] Milestone 5: Analysis & Writing
 Safety Evaluation: [████░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░] E5 Complete
 ```
 
-**Current Status (January 15, 2026):**
+**Current Status (January 20, 2026):**
 - **M0:** ✅ Complete - Infrastructure ready
 - **M1:** ✅ Complete - Negative result: raw latent doesn't work without training
 - **M4:** ✅ E5 Complete - Safety metrics all passed
 - **M2-LOCAL-PROTO:** ✅ Complete - Pipeline validated locally
-- **M2-SCALE Gate 1:** ✅ **PASS** - k=4: 34%, k=8: 38% (Modal A100)
-- **Next:** Fix ablation bug, then Gate 2 (k=16)
+- **M2-SCALE Gate 1:** ❌ **BLOCKED** - Frozen LLM cannot use soft prefixes
+  - Normal (24%) < Null (28%) with L_help loss
+  - Gate sweep shows no effect of prefix scale
+  - Fundamental architecture change needed
+- **Next:** Decide on pivot strategy (fine-tune LLM, in-context learning, or adapters)
 
 ---
 
