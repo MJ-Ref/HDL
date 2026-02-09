@@ -1,8 +1,8 @@
 # LPCA: Latent-Path Communication for AI Agents
 ## Research Plan & Technical Specification
 
-**Version:** 2.2
-**Status:** ⚠️ Rerunning eval after fixing null baseline inconsistency
+**Version:** 2.3
+**Status:** ❌ Gate 1 FAILED - Codec not learning semantic content
 **Target Venues:** NeurIPS 2026, ICML 2026, ICLR 2027
 **Last Updated:** January 20, 2026
 
@@ -14,48 +14,54 @@
 - **E5 Safety:** All metrics passed (compliance gap 17.5%, covert channel 8 bits)
 - **E2-min COMPLETE:** P5 (structured) dominates P2 at all budgets; P5_16B=56.7% at 43 bits
 - **Prefix Collapse:** ✓ **FIXED** via identity decoder + prefix calibration
-- **Semantic Signal:** ✓ **DETECTED** - Normal (26%) > Shuffle (16%) by 10 points!
-- **M2-SCALE Gate 1:** ⚠️ **INVALID** - Eval had null baseline bug (see below)
-- **L_help Loss:** ⚠️ **RERUNNING** - Previous eval invalid due to null inconsistency
-- **Bug Found:** Eval null used `codec.decode(0)` with LayerNorm bias ≠ training null (true zeros)
-- **Next:** Rerunning eval with fixed null baseline
+- **Null Baseline Bug:** ✓ **FIXED** - Eval now uses true zeros (January 20, 2026)
+- **M2-SCALE Gate 1:** ❌ **FAILED** - Normal 22%, Shuffle 32% (BACKWARDS - see below)
+- **Critical Finding:** Shuffle > Normal indicates codec NOT encoding semantic content
+- **Next:** Diagnose why shuffle beats normal; consider architectural changes
 
 ### Latest Findings (January 20, 2026)
 
-**L_help Loss Training Results (10 epochs with help loss):**
-| Condition | Success Rate | Analysis |
-|-----------|-------------|----------|
-| Normal    | **24.0%**   | WORSE than Null - codec hurts! |
-| Null      | 28.0%       | No prefix = best performance |
-| Random    | 28.0%       | Random = same as Null |
-| Shuffle   | 28.0%       | Shuffle = same as Null |
+**Gate 1 Results with FIXED Null Baseline (n=50):**
+| Condition | Success Rate | Expected | Status |
+|-----------|-------------|----------|--------|
+| Normal    | **22.0%** (11/50) | > 30% | ❌ Below threshold |
+| Null      | 24.0% (12/50) | ~20% | ✓ Now in expected range |
+| Random    | 28.0% (14/50) | ~20% | ⚠️ Slightly high |
+| Shuffle   | **32.0%** (16/50) | < 20% | ❌ **BACKWARDS** |
 
-**Gate Sweep Results (all identical):**
-| scale_gate | Success Rate |
-|------------|--------------|
-| 0.00       | 25.0%        |
-| 0.25       | 25.0%        |
-| 0.50       | 25.0%        |
-| 0.75       | 25.0%        |
-| 1.00       | 25.0%        |
-| 1.50       | 25.0%        |
+**Gate Sweep Results (n=20 each):**
+| scale_gate | Success Rate | Notes |
+|------------|--------------|-------|
+| 0.00       | 25.0%        | No prefix |
+| 0.25       | 30.0%        | |
+| 0.50       | **35.0%**    | ← PEAK |
+| 0.75       | 30.0%        | |
+| 1.00       | 30.0%        | Default |
+| 1.50       | 30.0%        | |
 
-**Training Metrics (L_help converged but didn't help):**
-- Help loss: 0.71 → 0.05 over 10 epochs (converged)
-- Mean cosine similarity: ~0.69 (some diversity)
-- But evaluation shows Normal < Null
+**Communication-Matters Subset:**
+- Episodes where Null fails: 38/50
+- Normal success on Null-failing episodes: **7.9%** (3/38)
 
-**Critical Finding: Evaluation Bug (Fixed January 20, 2026)**
+**Statistical Summary:**
+- Normal: 22.0% (95% CI: [12.8%, 35.2%])
+- P0 baseline: 20.0% (CI: [11.2%, 33.0%])
+- **Gate 1:** CI_low 12.8% >= 30.0%? **FAIL**
 
-The previous eval results were INVALID due to null baseline inconsistency:
-- **Training null:** `torch.zeros_like(prefix_embeddings)` = actual zeros
-- **Eval null:** `codec.decode(torch.zeros(...))` = LayerNorm bias ≠ zeros
+**Critical Finding: Shuffle BEATS Normal**
 
-This means all ablation baselines (Null, Random) had a learned constant bias leaking through,
-making L_help "converge" while inference showed no gain. The flat 28% across all conditions
-was consistent with a constant learned soft-prompt, NOT evidence that "frozen LLM can't use prefixes".
+The shuffle ablation at **32%** is HIGHER than Normal at **22%**. This is backwards:
+- Shuffle uses a message from a DIFFERENT episode (wrong semantic content)
+- If the codec encoded semantic information, shuffle should CRATER below P0 (~20%)
+- Instead, shuffle OUTPERFORMS the "correct" prefix
 
-**Fix Applied:**
+**What This Means:**
+1. The codec is NOT encoding semantically useful information
+2. The learned representations don't depend on message content/token order
+3. The prefix may be acting as a generic "priming" signal that helps with any answer
+4. The shuffle message provides a DIFFERENT (potentially better?) priming signal
+
+**Null Baseline Bug Fix (Applied This Run):**
 ```python
 # OLD (buggy):
 if ablation == 'null':
@@ -67,17 +73,40 @@ if ablation == 'null':
     prefix_embeddings = torch.zeros(1, codec.k, codec.d, device=device)  # True zeros
 ```
 
-**Status:** Rerunning eval with fixed null baseline to get valid results.
+**Null Fix Validation:**
+- Before fix: Null was 28% (same as Random/Shuffle)
+- After fix: Null is 24% (now overlaps P0 ~20%)
+- This confirms the fix worked - Null is now a proper "no information" baseline
 
-**Previous Findings (before L_help):**
+**Training Metrics (L_help converged):**
+- Help loss: 0.71 → 0.05 over 10 epochs (converged)
+- Mean cosine similarity: ~0.73 (some diversity maintained)
+- CE loss: 0.39, Contrast loss: 0.95
+
+**Why L_help Converged But Evaluation Failed:**
+The help loss trains: `max(0, NLL_correct - NLL_null + margin)`
+This ensures the correct prefix produces lower NLL than null prefix DURING TRAINING.
+But this doesn't guarantee the prefix encodes MESSAGE-SPECIFIC information.
+The codec may learn a single "good prefix" that beats null for ALL messages,
+rather than learning to encode the actual semantic content of each message.
+
+**Next Steps:**
+1. Diagnose why shuffle > normal (analyze learned representations)
+2. Consider explicit shuffle contrastive loss: `NLL_shuffle >> NLL_correct`
+3. May need reconstruction loss to force message-specific encoding
+4. Consider VQ-VAE bottleneck to enforce discrete, distinguishable codes
+
+**Previous Findings (before null fix - January 19, 2026):**
 | Condition | Success Rate | Analysis |
 |-----------|-------------|----------|
 | Normal    | 26.0%       | Baseline with correct prefix |
-| Null      | 26.0%       | No prefix = same as Normal |
+| Null      | 26.0%       | No prefix = same as Normal (BUG: LN bias) |
 | Random    | 28.0%       | Random prefix = slightly better |
 | Shuffle   | **16.0%**   | Wrong prefix HURTS (-10 points!) |
 
-The shuffle signal (16% < 26%) suggested semantic encoding was working, but this may have been noise or the codec learning to output "bad" prefixes for wrong messages rather than "good" prefixes for correct ones.
+This apparent shuffle signal (16% < 26%) suggested semantic encoding was working.
+However, with the null bug fixed, the current results show shuffle (32%) > normal (22%),
+indicating the previous shuffle signal may have been an artifact of the buggy null baseline.
 
 ### Previous Findings (January 16, 2026)
 
@@ -466,18 +495,31 @@ untrained activations. M2 trains a codec to create semantically meaningful laten
 
 ---
 
-#### M2-SCALE: Full Training (Requires Cloud GPUs) ❌ BLOCKED
+#### M2-SCALE: Full Training (Requires Cloud GPUs) ❌ FAILED
 
 **Purpose:** Train high-quality codec with full sweeps once pipeline is validated.
 
-**Gate 1 Results (January 15, 2026) - ⚠️ INVALID:**
+**Gate 1 Results (January 20, 2026) - WITH FIXED NULL BASELINE:**
+| Condition | Success Rate | Expected | Status |
+|-----------|-------------|----------|--------|
+| Normal    | 22.0% (11/50) | > 30% | ❌ Below threshold |
+| Null      | 24.0% (12/50) | ~20% | ✓ Now correct |
+| Random    | 28.0% (14/50) | ~20% | ⚠️ Slightly high |
+| Shuffle   | **32.0%** (16/50) | < 20% | ❌ **BACKWARDS** |
+
+**Gate 1 Verdict:** FAIL
+- Normal 22% (CI: [12.8%, 35.2%]) does not meet CI_low >= 30% threshold
+- Shuffle 32% > Normal 22% indicates codec NOT encoding semantic content
+- Null fix validated: Null (24%) now overlaps P0 (~20%)
+
+**Previous Results (January 15, 2026) - INVALID (for reference):**
 | Config | Final Loss | Normal | Null Msg | Random Latent | Gate 1 |
 |--------|-----------|--------|----------|---------------|--------|
 | k=4 | 0.097 | 34.0% | 30.0% | 38.0% | ⚠️ INVALID |
 | k=8 | 0.111 | 38.0% | 36.0% | 42.0% | ⚠️ INVALID |
 
-**Why Invalid:** Results may reflect text-based communication (message_A always present)
-or placeholder returns (~30%), NOT actual latent codec performance.
+**Why Previous Results Were Invalid:** Eval null used `codec.decode(0)` with LayerNorm bias,
+producing a learned constant rather than true zeros. This made all ablations look similar.
 
 ---
 
@@ -897,7 +939,7 @@ using the dataset's `receiver_output`/`receiver_tokens` fields.
 ```
 Week 1-4:   [████████] Milestone 0: Foundation ✅ COMPLETE
 Week 5-8:   [████████] Milestone 1: Latent Baselines ✅ COMPLETE (Negative Result)
-Week 9-14:  [████░░░░░░░░] Milestone 2: Continuous Codec ⏳ Gate 1 PASS, Gate 2 pending
+Week 9-14:  [████░░░░░░░░] Milestone 2: Continuous Codec ❌ Gate 1 FAIL (shuffle > normal)
 Week 15-20: [░░░░░░░░░░░░] Milestone 3: Discrete Codec
 Week 21-24: [░░░░░░░░] Milestone 5: Analysis & Writing
 
@@ -909,11 +951,13 @@ Safety Evaluation: [████░░░░░░░░░░░░░░░░
 - **M1:** ✅ Complete - Negative result: raw latent doesn't work without training
 - **M4:** ✅ E5 Complete - Safety metrics all passed
 - **M2-LOCAL-PROTO:** ✅ Complete - Pipeline validated locally
-- **M2-SCALE Gate 1:** ⚠️ **RERUNNING** - Previous results invalid due to null baseline bug
-  - Bug: Eval null used `codec.decode(0)` with LayerNorm bias ≠ training null (true zeros)
-  - Fix applied: Eval null now uses actual zeros to match training
-  - Retraining + eval in progress on Modal A100
-- **Next:** Await valid eval results with fixed null baseline
+- **M2-SCALE Gate 1:** ❌ **FAILED** - Codec not learning semantic content
+  - Null baseline bug fixed ✓ (Null now 24% ~= P0 20%)
+  - Normal: 22%, Shuffle: 32% (BACKWARDS - shuffle should crater)
+  - Codec learns generic "priming" effect, not message-specific encoding
+  - Gate sweep shows weak effect (peak 35% at scale_gate=0.5)
+  - Communication-matters subset: only 7.9% success
+- **Next:** Diagnose shuffle > normal; consider architectural/objective changes
 
 ---
 
