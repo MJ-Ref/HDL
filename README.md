@@ -128,6 +128,16 @@ lpca/
 | [BASELINES.md](BASELINES.md) | Baseline implementation details |
 | [SAFETY_PROTOCOL.md](SAFETY_PROTOCOL.md) | Safety evaluation procedures |
 | [PROJECT_STATUS.md](PROJECT_STATUS.md) | Current implementation status |
+| [SESSION_HANDOFF.md](SESSION_HANDOFF.md) | Session continuity notes |
+
+## Claude Code Integration
+
+This repo includes workflow tools for [Claude Code](https://claude.ai/code):
+
+- **`/verify-docs`** - Custom skill to check documentation consistency across PLAN.md, PROJECT_STATUS.md, and SESSION_HANDOFF.md
+- **Post-edit hook** - Automatically runs `ruff check --fix` on Python files after edits
+
+Configuration lives in `.claude/`.
 
 ## Research Design
 
