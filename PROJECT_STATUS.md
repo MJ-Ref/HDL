@@ -1,7 +1,7 @@
 # LPCA Project Status
 
-**Last Updated:** January 15, 2026
-**Current Phase:** M2-SCALE Gate 1 INVALID - Plumbing Proof FAIL, Training Objective Wrong
+**Last Updated:** January 20, 2026
+**Current Phase:** M2-SCALE Gate 1 FAILED - Codec not learning semantic content
 
 ---
 
@@ -9,7 +9,7 @@
 
 The LPCA (Latent-Path Communication for AI Agents) research project has completed **Milestone 0** (Foundation), **Milestone 1** (Latent Baselines), and **E2-min** (Budgeted Text Baselines).
 
-**M2-SCALE Gate 1 results are INVALID** due to critical bugs identified during review.
+**M2-SCALE Gate 1 FAILED** - Codec learns generic priming, not semantic encoding.
 
 **Key findings (n=50, tightened task):**
 - **P1 (68%) >> P0 (20%)** - Text communication adds **+48pp** (non-overlapping 95% CIs)
@@ -17,17 +17,16 @@ The LPCA (Latent-Path Communication for AI Agents) research project has complete
 - **P5 (structured) dominates P2 (raw text)** at all budgets
 - **P5_16B = 56.7% at ~43 bits** - Target for codec at k=4
 
-**M2-SCALE Gate 1 Results (January 15, 2026) - ⚠️ INVALID:**
-| Config | Final Loss | Success Rate | Gate 1 Status |
-|--------|-----------|--------------|---------------|
-| k=4 | 0.097 | 34.0% | ⚠️ **INVALID** |
-| k=8 | 0.111 | 38.0% | ⚠️ **INVALID** |
+**M2-SCALE Gate 1 Results (January 20, 2026) - WITH FIXED NULL BASELINE:**
+| Condition | Success Rate | Expected | Status |
+|-----------|-------------|----------|--------|
+| Normal    | 22.0% (11/50) | > 30% | ❌ Below threshold |
+| Null      | 24.0% (12/50) | ~20% | ✓ Now correct |
+| Random    | 28.0% (14/50) | ~20% | ⚠️ Slightly high |
+| Shuffle   | **32.0%** (16/50) | < 20% | ❌ **BACKWARDS** |
 
-**Why Invalid:**
-1. Latent vectors computed but never injected (Agent B always sees text)
-2. Placeholder fallback can return ~30% success even if env fails to load
-3. Missing shuffle ablation (required by spec)
-4. Point-estimate gating with n=50 is too noisy
+**Critical Finding:** Shuffle (32%) > Normal (22%) indicates codec NOT encoding semantic content.
+The codec learns a generic "priming" effect rather than message-specific information.
 
 **Codec Targets (from E2-min):**
 | Target | Success | Bits | Codec k |
@@ -36,7 +35,7 @@ The LPCA (Latent-Path Communication for AI Agents) research project has complete
 | P5_64B | 60.0% | ~214 | k=16 (~128 bits) |
 | P5_256B | 66.7% | ~2132 | k=64 (~512 bits) |
 
-Safety evaluation (E5) passed all metrics. **Next step: Fix critical bugs, rerun Gate 1 with validity checks.**
+Safety evaluation (E5) passed all metrics. **Next step: Diagnose shuffle > normal; consider architectural changes.**
 
 ---
 

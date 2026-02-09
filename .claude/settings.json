@@ -1,0 +1,10 @@
+{
+  "hooks": {
+    "postEdit": [
+      {
+        "pattern": "**/*.py",
+        "command": "ruff check $FILE --fix 2>/dev/null || true"
+      }
+    ]
+  }
+}
