@@ -124,6 +124,7 @@ lpca/
 |----------|-------------|
 | [PLAN.md](PLAN.md) | Master research plan with milestones |
 | [EXPERIMENTS.md](EXPERIMENTS.md) | Detailed experimental protocols |
+| [docs/experiments/](docs/experiments/) | Versioned experiment attempts with decision logs |
 | [METRICS.md](METRICS.md) | Pre-registered metrics specifications |
 | [BASELINES.md](BASELINES.md) | Baseline implementation details |
 | [SAFETY_PROTOCOL.md](SAFETY_PROTOCOL.md) | Safety evaluation procedures |

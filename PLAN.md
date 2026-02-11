@@ -1028,6 +1028,7 @@ Safety Evaluation: [████░░░░░░░░░░░░░░░░
 - **Appendix C:** BASELINES.md - Baseline implementation details
 - **Appendix D:** SAFETY_PROTOCOL.md - Safety evaluation protocols
 - **Appendix E:** REPRODUCIBILITY.md - Reproducibility checklist
+- **Appendix F:** [docs/experiments/](docs/experiments/) - Versioned experiment attempts with decision logs
 
 ---
 

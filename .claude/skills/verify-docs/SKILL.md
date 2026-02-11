@@ -28,8 +28,11 @@ Verify that LPCA/HDL documentation files are in sync with current codebase state
 ## Secondary Documentation
 
 5. **EXPERIMENTS.md** - Detailed protocols
-6. **logs/m2_gate1/RESULTS.md** - Gate 1 results
-7. **docs/MODAL_SETUP.md** - Cloud setup
+6. **docs/experiments/** - Versioned experiment attempts
+   - gate1-attempt-01.md (Jan 15 - INVALID)
+   - gate1-attempt-02.md (Jan 20 - FAILED)
+7. **logs/m2_gate1/RESULTS.md** - Gate 1 raw logs
+8. **docs/MODAL_SETUP.md** - Cloud setup
 
 ## Verification Checklist
 
@@ -43,7 +46,8 @@ Verify that LPCA/HDL documentation files are in sync with current codebase state
 ### Staleness Checks
 - [ ] PLAN.md "Last Updated" is recent for active work
 - [ ] SESSION_HANDOFF.md updated after significant changes
-- [ ] logs/m2_gate1/RESULTS.md matches PLAN.md findings
+- [ ] docs/experiments/ has entry for latest Gate attempt
+- [ ] docs/experiments/README.md index is current
 
 ### Key Metrics to Verify
 From latest Gate 1 results:
