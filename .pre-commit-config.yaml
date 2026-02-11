@@ -1,0 +1,35 @@
+# Pre-commit hooks for LPCA/HDL repository
+# Install: pip install pre-commit && pre-commit install
+# Run manually: pre-commit run --all-files
+
+repos:
+  # Documentation health checks
+  - repo: local
+    hooks:
+      - id: check-docs
+        name: Check documentation health
+        entry: python scripts/check_docs.py
+        language: python
+        pass_filenames: false
+        always_run: true
+        # Only run when docs are modified (optional - remove for always)
+        files: \.(md)$
+
+  # Python linting with ruff
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.4.4
+    hooks:
+      - id: ruff
+        args: [--fix, --exit-non-zero-on-fix]
+      - id: ruff-format
+
+  # Trailing whitespace, end of file, etc.
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v4.6.0
+    hooks:
+      - id: trailing-whitespace
+        exclude: \.md$  # Allow trailing spaces in markdown (line breaks)
+      - id: end-of-file-fixer
+      - id: check-yaml
+      - id: check-added-large-files
+        args: ['--maxkb=1000']
