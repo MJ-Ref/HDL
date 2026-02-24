@@ -1,554 +1,176 @@
-# LPCA Reproducibility Documentation
+# LPCA Reproducibility Guide
 
-**Version:** 1.0
-**Status:** Pre-registered
-**Aligned With:** NeurIPS 2024 Reproducibility Checklist
+**Version:** 2.0  
+**Scope:** Canonical full-suite pipeline (E1/E2/E3/E4/M2) and publication artifact generation.
 
----
+This file documents how to reproduce LPCA results using the current frozen benchmark workflow.
 
-## 1. NeurIPS Reproducibility Checklist Compliance
+## 1. Reproducibility Principles
 
-### 1.1 Claims and Evidence
+LPCA reproducibility is artifact-first:
 
-| Claim | Evidence Type | Location |
-|-------|---------------|----------|
-| Latent comm improves capability | Experimental | EXPERIMENTS.md §E4, E5 |
-| Discrete codec preserves capability | Experimental | EXPERIMENTS.md §E6 |
-| Rate-distortion frontier exists | Experimental | METRICS.md §6.1 |
-| Safety indicators are measurable | Experimental | SAFETY_PROTOCOL.md §3-6 |
+- Every run is represented by a manifest (`manifest.json`) with exact commands, statuses, and discovered artifacts.
+- Analysis and paper tables are generated from manifests and artifact files, not manual copy/paste.
+- Final reproducibility package is emitted automatically from the same run directory.
 
-### 1.2 Theoretical Claims
+## 2. Frozen Benchmark Specification
 
-No unproven theoretical claims are made. All claims are empirical and testable.
+Canonical config:
 
-### 1.3 Experimental Claims
+- `configs/full_suite_frozen.yaml`
+- `configs/seeds/full_suite_seed_registry.json`
 
-All experiments will include:
-- Central tendency (mean) AND variation (std, CI)
-- Statistical significance tests where appropriate
-- Effect sizes for all comparisons
-- Multiple random seeds (minimum 5)
+Current frozen matrix:
 
----
+- Models: `qwen_3b`, `qwen_7b`, `mistral_7b`
+- Episode targets: `E1=100`, `E2=100`, `E3=100`, `E4=100`, `M2_eval=100`
+- Matrix guardrails: at least `3` models and `100` seeds/episodes for matrix runs
 
-## 2. Code and Data Availability
-
-### 2.1 Code Release Plan
-
-| Component | Release | License |
-|-----------|---------|---------|
-| Evaluation harness | Full code | Apache 2.0 |
-| Task generators | Full code | Apache 2.0 |
-| Protocol implementations | Full code | Apache 2.0 |
-| Codec architectures | Full code | Apache 2.0 |
-| Training scripts | Full code | Apache 2.0 |
-| Analysis scripts | Full code | Apache 2.0 |
-| Trained codec weights | Released | Apache 2.0 |
-| Evaluation logs | Sample released | CC-BY 4.0 |
-
-### 2.2 Repository Structure
-
-```
-lpca/
-├── README.md                    # Quick start guide
-├── LICENSE                      # Apache 2.0
-├── requirements.txt             # Pinned dependencies
-├── setup.py                     # Package installation
-│
-├── configs/                     # Experiment configurations
-│   ├── base.yaml
-│   ├── experiments/
-│   └── sweeps/
-│
-├── lpca/                        # Main package
-│   ├── __init__.py
-│   ├── core/
-│   │   ├── config.py
-│   │   ├── logging.py
-│   │   ├── metrics.py
-│   │   └── budget.py
-│   ├── envs/
-│   │   ├── base.py
-│   │   ├── split_synthetic.py
-│   │   └── split_code.py
-│   ├── agents/
-│   │   ├── base.py
-│   │   ├── model_wrapper.py
-│   │   └── policy.py
-│   ├── channels/
-│   │   ├── base.py
-│   │   ├── text.py
-│   │   ├── cipher.py
-│   │   ├── activation.py
-│   │   └── codec.py
-│   ├── training/
-│   │   ├── distill.py
-│   │   ├── vq_train.py
-│   │   └── evaluate.py
-│   └── safety/
-│       ├── monitors.py
-│       ├── compliance.py
-│       ├── covert_probe.py
-│       └── bloom_eval.py
-│
-├── scripts/
-│   ├── run_experiment.py
-│   ├── run_sweep.py
-│   ├── analyze_results.py
-│   └── generate_figures.py
-│
-├── tests/                       # Unit tests
-│   ├── test_envs.py
-│   ├── test_channels.py
-│   └── test_metrics.py
-│
-├── notebooks/                   # Analysis notebooks
-│   └── results_analysis.ipynb
-│
-└── docs/                        # Additional documentation
-    ├── PLAN.md
-    ├── EXPERIMENTS.md
-    ├── METRICS.md
-    ├── BASELINES.md
-    ├── SAFETY_PROTOCOL.md
-    └── REPRODUCIBILITY.md
-```
-
-### 2.3 Data Release
-
-| Data Type | Size Est. | Format | Release |
-|-----------|-----------|--------|---------|
-| Task instances | ~100MB | JSONL | Full |
-| Episode logs | ~10GB | Parquet | Sample (1%) |
-| Activation snapshots | ~500GB | NPY | Not released (regenerable) |
-| Trained codecs | ~1GB | PyTorch | Full |
-| Evaluation results | ~100MB | Parquet | Full |
-
----
-
-## 3. Environment Specification
-
-### 3.1 Hardware Requirements
-
-**Minimum (for reproduction):**
-- GPU: Any CUDA-capable or Apple Silicon
-- RAM: 32GB system + 16GB VRAM (or 64GB unified)
-- Storage: 100GB free
-
-**Recommended (for full experiments):**
-- GPU: Apple M3 Max (98GB unified) or NVIDIA A100 (80GB)
-- RAM: 64GB+ system
-- Storage: 1TB SSD
-
-**Used in Paper:**
-```yaml
-primary_hardware:
-  machine: MacBook Pro (Mac15,11)
-  chip: Apple M3 Max
-  memory: 98GB unified
-  storage: 1TB SSD
-  os: macOS Sonoma 14.x
-
-cloud_hardware:  # For scaling experiments only
-  instance: AWS p4d.24xlarge
-  gpu: 8x NVIDIA A100 80GB
-  memory: 1152GB
-  storage: 8TB NVMe
-```
-
-### 3.2 Software Requirements
-
-**Python Version:** 3.11.x or 3.12.x
-
-**Core Dependencies:**
-```
-# requirements.txt
-torch>=2.2.0
-transformers>=4.38.0
-accelerate>=0.27.0
-datasets>=2.18.0
-safetensors>=0.4.0
-numpy>=1.26.0
-scipy>=1.12.0
-pandas>=2.2.0
-pyarrow>=15.0.0
-einops>=0.7.0
-pydantic>=2.6.0
-hydra-core>=1.3.0
-tqdm>=4.66.0
-rich>=13.7.0
-matplotlib>=3.8.0
-seaborn>=0.13.0
-scikit-learn>=1.4.0
-pytest>=8.0.0
-```
-
-**Exact Versions (for perfect reproduction):**
-```
-# requirements-lock.txt
-# Generated at experiment time, included in release
-```
-
-### 3.3 Environment Setup
+## 3. Environment Setup
 
 ```bash
-# Clone repository
-git clone https://github.com/[org]/lpca.git
-cd lpca
+# Clone
+git clone https://github.com/MJ-Ref/HDL.git
+cd HDL
 
-# Create environment
-python -m venv venv
-source venv/bin/activate  # or `venv\Scripts\activate` on Windows
+# Python env
+python -m venv .venv
+source .venv/bin/activate
 
-# Install dependencies
+# Install
 pip install -r requirements.txt
-
-# Install package
 pip install -e .
 
-# Verify installation
-python -c "import lpca; print(lpca.__version__)"
-pytest tests/ -v
+# Sanity check
+pytest -q
 ```
 
-### 3.4 Environment Variables
+Notes:
+
+- `setup.py` requires Python `>=3.11`.
+- M2 experiments run via Modal and require Modal auth/setup (`docs/MODAL_SETUP.md`).
+
+## 4. Canonical Run Commands
+
+### 4.1 Dry-run (recommended first)
 
 ```bash
-# Required for MPS (Apple Silicon)
-export PYTORCH_ENABLE_MPS_FALLBACK=1
-export TOKENIZERS_PARALLELISM=false
-
-# Optional: Weights & Biases logging
-export WANDB_PROJECT=lpca
-export WANDB_ENTITY=your-entity
-
-# Optional: HuggingFace cache
-export HF_HOME=/path/to/cache
+python scripts/run_full_suite.py \
+  --config configs/full_suite_frozen.yaml
 ```
 
----
-
-## 4. Model Specifications
-
-### 4.1 Models Used
-
-| Model | Parameters | Source | Access |
-|-------|------------|--------|--------|
-| Llama-3.2-1B-Instruct | 1.24B | HuggingFace | Open weights |
-| Llama-3.2-3B-Instruct | 3.21B | HuggingFace | Open weights |
-| Llama-3.1-8B-Instruct | 8.03B | HuggingFace | Open weights |
-| Qwen2.5-1.5B-Instruct | 1.54B | HuggingFace | Open weights |
-| Qwen2.5-7B-Instruct | 7.62B | HuggingFace | Open weights |
-
-### 4.2 Model Loading
-
-```python
-from transformers import AutoModelForCausalLM, AutoTokenizer
-
-MODEL_CONFIGS = {
-    'llama-1b': {
-        'name': 'meta-llama/Llama-3.2-1B-Instruct',
-        'dtype': torch.float16,
-        'device_map': 'auto',
-    },
-    'llama-3b': {
-        'name': 'meta-llama/Llama-3.2-3B-Instruct',
-        'dtype': torch.float16,
-        'device_map': 'auto',
-    },
-    'llama-8b': {
-        'name': 'meta-llama/Llama-3.1-8B-Instruct',
-        'dtype': torch.float16,
-        'device_map': 'auto',
-    },
-}
-
-def load_model(config_name: str):
-    config = MODEL_CONFIGS[config_name]
-    model = AutoModelForCausalLM.from_pretrained(
-        config['name'],
-        torch_dtype=config['dtype'],
-        device_map=config['device_map'],
-        trust_remote_code=True,
-    )
-    tokenizer = AutoTokenizer.from_pretrained(config['name'])
-    return model, tokenizer
-```
-
----
-
-## 5. Experiment Reproduction
-
-### 5.1 Quick Reproduction (Subset)
+### 4.2 Full execution
 
 ```bash
-# Run baseline validation (E1) - ~4 hours
-python scripts/run_experiment.py --config configs/experiments/e1_baseline.yaml
-
-# Run single protocol comparison - ~1 hour
-python scripts/run_experiment.py \
-    --config configs/experiments/quick_test.yaml \
-    --protocols P1,A0 \
-    --n_episodes 50
+python scripts/run_full_suite.py \
+  --config configs/full_suite_frozen.yaml \
+  --run-id run_lpca_full_suite \
+  --stages prepare,run,aggregate,gate,paper,render,package,publish \
+  --execute \
+  --stop-on-error
 ```
 
-### 5.2 Full Reproduction
+### 4.3 Focused M2 matrix execution
 
 ```bash
-# Full experimental suite - ~2 weeks on M3 Max
-# Or ~3 days on 4x A100
-
-# Step 1: Baselines (E1-E2)
-python scripts/run_sweep.py --config configs/sweeps/baselines.yaml
-
-# Step 2: Latent baselines (E3-E4)
-python scripts/run_sweep.py --config configs/sweeps/latent_baselines.yaml
-
-# Step 3: Codec training (E5)
-python scripts/run_sweep.py --config configs/sweeps/codec_training.yaml
-
-# Step 4: Discrete codec (E6)
-python scripts/run_sweep.py --config configs/sweeps/discrete_codec.yaml
-
-# Step 5: Safety evaluation
-python scripts/run_sweep.py --config configs/sweeps/safety_eval.yaml
-
-# Step 6: Generate figures and tables
-python scripts/analyze_results.py --output_dir results/
-python scripts/generate_figures.py --input_dir results/ --output_dir figures/
+python scripts/run_full_suite.py \
+  --run-id run_m2_only \
+  --models qwen_3b,qwen_7b,mistral_7b \
+  --experiments M2 \
+  --stages prepare,run,aggregate,gate,paper,render,package,publish \
+  --execute \
+  --stop-on-error
 ```
 
-### 5.3 Expected Results
+## 5. Run Directory Contract
 
-We will release expected result ranges for validation:
+Each run writes to `outputs/full_suite/<run_id>/`.
 
-```yaml
-# expected_results.yaml
-e1_baseline_validation:
-  P0_synthetic_sr: [0.15, 0.25]
-  P1_synthetic_sr: [0.65, 0.80]
-  gap_threshold: 0.30
+Expected top-level outputs:
 
-e4_activation_grafting:
-  best_layer: ["n/2", "2n/3"]
-  best_combine: ["average", "weighted_0.7"]
-  improvement_over_P1: [0.10, 0.30]
+- `manifest.json`
+- `summary.md`
+- `resolved_config.json`
+- `resolved_seed_registry.json`
+- `suite_report.json`, `suite_report.md`
+- `m2_gate_report.json`, `m2_gate_report.md`
+- `paper_pack/`
+- `repro_package/`
 
-e6_discrete_codec:
-  retention_at_10x: [0.60, 0.90]
-  pareto_optimal_bits: [128, 512]
+Artifacts inside `paper_pack/`:
+
+- `main_table.csv`
+- `main_table.md`
+- `m2_gate_table.md`
+- `figure_data.json`
+- `paper_pack_manifest.json`
+
+Artifacts inside `repro_package/`:
+
+- `RUNBOOK.md`
+- `environment_lock.txt`
+- `reproduce_main_table.sh`
+- `repro_package_manifest.json`
+
+## 6. Integrity Checks
+
+Run these checks after execution:
+
+```bash
+# 1) No failed commands in manifest
+jq '[.commands[] | select(.status=="failed")] | length' outputs/full_suite/<run_id>/manifest.json
+
+# 2) Publish stage completed and failure flag is false
+jq '{stages_completed,has_failures}' outputs/full_suite/<run_id>/manifest.json
+
+# 3) Package warnings should be zero for clean publication runs
+jq '.warnings | length' outputs/full_suite/<run_id>/repro_package/repro_package_manifest.json
 ```
 
----
+Expected:
 
-## 6. Hyperparameter Documentation
+- failed-command count is `0`
+- `has_failures` is `false`
+- package warning count is `0`
 
-### 6.1 Fixed Hyperparameters
+## 7. Reproduce Main Table from an Existing Run
 
-| Parameter | Value | Justification |
-|-----------|-------|---------------|
-| Temperature | 0.7 | Standard for instruction-following |
-| Top-p | 0.9 | Nucleus sampling default |
-| Max tokens | 2048 | Sufficient for all tasks |
-| Context window | 4096 | Model context limit |
+From the generated package:
 
-### 6.2 Tuned Hyperparameters
-
-All tuned hyperparameters will be documented with:
-- Search space
-- Selection criterion
-- Final selected value
-- Sensitivity analysis
-
-```yaml
-# hyperparameters.yaml
-activation_grafting:
-  layer_idx:
-    search_space: [n/4, n/3, n/2, 2n/3, 3n/4]
-    selection_criterion: max_success_rate
-    selected: n/2
-    sensitivity: "±10% performance within [n/3, 2n/3]"
-
-  combine_fn:
-    search_space: [replace, add, average, weighted]
-    selection_criterion: max_success_rate
-    selected: average
-    sensitivity: "weighted_0.7 within 2%"
-
-codec_training:
-  k_vectors:
-    search_space: [4, 8, 16, 32, 64]
-    selection_criterion: pareto_optimal
-    selected: 16
-    sensitivity: "see rate-distortion curve"
-
-  learning_rate:
-    search_space: [1e-4, 3e-4, 1e-3]
-    selection_criterion: validation_loss
-    selected: 3e-4
+```bash
+bash outputs/full_suite/<run_id>/repro_package/reproduce_main_table.sh <run_id>
 ```
 
----
+This regenerates:
 
-## 7. Statistical Reporting
+- `suite_report.json` / `suite_report.md`
+- `paper_pack/main_table.csv` and related paper-pack outputs
 
-### 7.1 Reporting Standards
+## 8. Modal and External Dependency Notes
 
-All results will include:
+- M2 uses Modal (`modal/train_m2_codec.py`) and cloud model downloads, so wall-clock runtime and provider scheduling can vary.
+- Text/latent metrics can show minor stochastic variation across hardware/software updates; enforce fixed seeds and frozen config for comparisons.
+- For claim-level traceability, use `docs/ARTIFACT_INDEX.md` plus run-specific manifests.
 
-1. **Point estimates:** Mean or median as appropriate
-2. **Uncertainty:** 95% confidence intervals
-3. **Sample size:** Number of episodes/seeds
-4. **Significance tests:** p-values where claimed
-5. **Effect sizes:** Cohen's d for comparisons
+## 9. Figure-Pack Extension (Optional)
 
-### 7.2 Multiple Comparisons
+LPCA includes a PaperBanana adapter for publication figure generation:
 
-When making multiple comparisons:
-- Pre-specified comparisons: Bonferroni correction
-- Exploratory analysis: Benjamini-Hochberg FDR
-- Clearly label which is which
+```bash
+# Build 3 figure briefs from a run
+python scripts/analysis/generate_paperbanana_figure_pack.py \
+  --run-dir outputs/full_suite/<run_id>
 
-### 7.3 Negative Results
-
-We commit to reporting:
-- Experiments that didn't work
-- Hypotheses that were falsified
-- Approaches that were abandoned and why
-
----
-
-## 8. Logging and Provenance
-
-### 8.1 Experiment Logging
-
-Every experiment logs:
-
-```python
-@dataclass
-class ExperimentLog:
-    # Identification
-    experiment_id: str
-    git_commit: str
-    timestamp: str
-
-    # Configuration
-    config: Dict
-    hyperparameters: Dict
-    random_seeds: List[int]
-
-    # Environment
-    hardware: Dict
-    software_versions: Dict
-
-    # Results
-    metrics: Dict
-    artifacts: List[str]
-
-    # Reproducibility
-    command: str  # Exact command to reproduce
-    duration_seconds: float
+# Optionally execute PaperBanana generation
+python scripts/analysis/generate_paperbanana_figure_pack.py \
+  --run-dir outputs/full_suite/<run_id> \
+  --paperbanana-root /Users/mj/Documents/PaperBanana/PaperBanana-main \
+  --execute \
+  --exp-mode dev_full \
+  --retrieval-setting none \
+  --candidates 3
 ```
 
-### 8.2 Artifact Tracking
+## 10. What This Guide Replaces
 
-```python
-class ArtifactTracker:
-    def __init__(self, experiment_id: str, output_dir: str):
-        self.experiment_id = experiment_id
-        self.output_dir = Path(output_dir) / experiment_id
-        self.output_dir.mkdir(parents=True, exist_ok=True)
-        self.manifest = []
-
-    def save_artifact(self, name: str, data: Any, format: str = 'auto'):
-        path = self.output_dir / name
-        if format == 'json' or (format == 'auto' and isinstance(data, dict)):
-            with open(path.with_suffix('.json'), 'w') as f:
-                json.dump(data, f, indent=2)
-        elif format == 'parquet':
-            data.to_parquet(path.with_suffix('.parquet'))
-        elif format == 'torch':
-            torch.save(data, path.with_suffix('.pt'))
-
-        self.manifest.append({
-            'name': name,
-            'path': str(path),
-            'hash': compute_hash(path),
-            'timestamp': datetime.now().isoformat(),
-        })
-
-    def save_manifest(self):
-        manifest_path = self.output_dir / 'manifest.json'
-        with open(manifest_path, 'w') as f:
-            json.dump(self.manifest, f, indent=2)
-```
-
----
-
-## 9. Known Limitations
-
-### 9.1 Reproducibility Challenges
-
-| Challenge | Mitigation |
-|-----------|------------|
-| Non-deterministic GPU operations | Document variance, use multiple seeds |
-| Model version updates | Pin exact model commits |
-| Hardware differences | Report hardware-specific results |
-| Floating point precision | Use deterministic algorithms where possible |
-
-### 9.2 What May Differ
-
-Even with careful reproduction, expect:
-- ±5% variance in success rates (sampling)
-- ±10% variance in training curves (optimization)
-- ±20% variance in wall-clock times (hardware)
-
-### 9.3 What Should Not Differ
-
-- Qualitative conclusions
-- Ranking of protocols
-- Direction of effects
-- Stop condition triggers
-
----
-
-## 10. Contact and Support
-
-### 10.1 Bug Reports
-
-File issues at: `https://github.com/[org]/lpca/issues`
-
-Include:
-- Exact error message
-- Environment details (`pip freeze`)
-- Reproduction steps
-- Expected vs actual behavior
-
-### 10.2 Questions
-
-For questions about:
-- **Reproduction:** Open GitHub issue with `[reproduction]` tag
-- **Methodology:** Email corresponding author
-- **Collaboration:** Email corresponding author
-
----
-
-## Appendix: NeurIPS Checklist Mapping
-
-| Checklist Item | Status | Evidence |
-|----------------|--------|----------|
-| Claims supported by evidence | Yes | EXPERIMENTS.md |
-| Theoretical claims have proofs | N/A | No theoretical claims |
-| Experimental claims include variance | Yes | METRICS.md §7 |
-| Datasets described | Yes | EXPERIMENTS.md §1 |
-| Code available | Yes | §2.1 |
-| Training details provided | Yes | EXPERIMENTS.md §E5-E6 |
-| Error bars/CIs reported | Yes | METRICS.md §7.3 |
-| Compute requirements stated | Yes | §3.1, PLAN.md §9 |
-| Hyperparameters documented | Yes | §6 |
-| Best hyperparameters justified | Yes | §6.2 |
-| Random seeds documented | Yes | EXPERIMENTS.md §4 |
-
----
-
-*Document Status: Pre-registered. Will be updated with actual values and links upon experiment completion.*
+This version supersedes earlier pre-registered templates that referenced deprecated sweep scripts and hypothetical release plans. The source of truth is now the artifact-backed canonical pipeline in `scripts/run_full_suite.py`.

@@ -1,6 +1,6 @@
 # LPCA Artifact Index
 
-Generated (UTC): 2026-02-24 06:51:30Z
+Generated (UTC): 2026-02-24 20:25:46Z
 
 This file maps headline numbers to concrete artifact files for traceability.
 
