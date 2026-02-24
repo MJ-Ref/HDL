@@ -111,19 +111,27 @@ experiments:
     artifact_glob: "{output_dir}/activation_grafting_*/summary.json"
 
   M2:
-    enabled: false
+    enabled: true
     command:
       - python
       - modal/train_m2_codec.py
       - --local
+      - --codec-variant
+      - m2v2
       - --k
       - "{m2_k}"
       - --epochs
       - "{m2_epochs}"
       - --data
       - "{m2_data_path}"
+      - --model
+      - "{model_id}"
+      - --base-seed
+      - "{primary_base_seed}"
       - --device
       - "{device}"
       - --eval-episodes
       - "{m2_eval_episodes}"
-    artifact_glob: "checkpoints/*_eval.json"
+      - --output
+      - "{output_dir}/m2_eval.json"
+    artifact_glob: "{output_dir}/m2_eval.json"
