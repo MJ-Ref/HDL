@@ -4,6 +4,9 @@ seed_registry_path: configs/seeds/full_suite_seed_registry.json
 output_root: outputs/full_suite
 default_device: mps
 
+seed_usage:
+  primary_set: key_comparisons
+
 episodes:
   e1: 100
   e2: 100
@@ -34,6 +37,8 @@ experiments:
       - P0,P1
       - --n_episodes
       - "{e1_episodes}"
+      - --base_seed
+      - "{primary_base_seed}"
       - --model
       - "{model_id}"
       - --device
@@ -51,6 +56,8 @@ experiments:
       - P2,P5
       - --n_episodes
       - "{e2_episodes}"
+      - --base_seed
+      - "{primary_base_seed}"
       - --model
       - "{model_id}"
       - --device
@@ -66,6 +73,8 @@ experiments:
       - scripts/run_cipher_experiment.py
       - --n_episodes
       - "{e3_episodes}"
+      - --base_seed
+      - "{primary_base_seed}"
       - --model
       - "{model_id}"
       - --device
@@ -85,6 +94,8 @@ experiments:
       - replace
       - --n_episodes
       - "{e4_episodes}"
+      - --base_seed
+      - "{primary_base_seed}"
       - --model
       - "{model_id}"
       - --device

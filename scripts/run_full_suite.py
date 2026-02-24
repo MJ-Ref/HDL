@@ -28,6 +28,7 @@ REQUIRED_CONFIG_KEYS = [
     "seed_registry_path",
     "output_root",
     "default_device",
+    "seed_usage",
     "episodes",
     "m2",
     "models",
@@ -191,6 +192,8 @@ def build_context(
     config: Dict[str, Any],
     model: Dict[str, str],
     output_dir: Path,
+    primary_base_seed: int,
+    primary_seed_count: int,
 ) -> Dict[str, Any]:
     episodes = config["episodes"]
     m2 = config["m2"]
@@ -207,6 +210,8 @@ def build_context(
         "m2_k": m2["k"],
         "m2_epochs": m2["epochs"],
         "m2_data_path": m2["data_path"],
+        "primary_base_seed": primary_base_seed,
+        "primary_seed_count": primary_seed_count,
     }
 
 
@@ -268,6 +273,16 @@ def main() -> None:
     seed_registry_path = (repo_root / config["seed_registry_path"]).resolve()
     seed_registry = json.loads(seed_registry_path.read_text())
     expanded_seed_registry = expand_seed_registry(seed_registry)
+    primary_seed_set_name = config["seed_usage"]["primary_set"]
+    if primary_seed_set_name not in expanded_seed_registry:
+        raise ValueError(
+            f"Primary seed set {primary_seed_set_name} not found in seed registry"
+        )
+    primary_seed_values = expanded_seed_registry[primary_seed_set_name]
+    if not primary_seed_values:
+        raise ValueError(f"Primary seed set {primary_seed_set_name} is empty")
+    primary_base_seed = int(primary_seed_values[0])
+    primary_seed_count = len(primary_seed_values)
 
     run_id = args.run_id or f"run_{uuid.uuid4().hex[:8]}"
     output_root = (
@@ -327,7 +342,13 @@ def main() -> None:
                 log_path = run_dir / "logs" / model["name"] / exp_name / "command.log"
                 output_dir.mkdir(parents=True, exist_ok=True)
 
-                context = build_context(config, model, output_dir)
+                context = build_context(
+                    config,
+                    model,
+                    output_dir,
+                    primary_base_seed=primary_base_seed,
+                    primary_seed_count=primary_seed_count,
+                )
                 command = format_command(exp_cfg["command"], context)
 
                 result = run_command(

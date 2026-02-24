@@ -434,6 +434,7 @@ def main():
         ],
     )
     parser.add_argument("--n_episodes", type=int, default=10)
+    parser.add_argument("--base_seed", type=int, default=42)
     parser.add_argument(
         "--sweep_layers", action="store_true", help="Sweep across layers"
     )
@@ -449,6 +450,7 @@ def main():
     config = ActivationExperimentConfig(
         model_name=args.model,
         n_episodes=args.n_episodes,
+        base_seed=args.base_seed,
         graft_layer=args.layer,
         combine_fn=args.combine,
         device=args.device,

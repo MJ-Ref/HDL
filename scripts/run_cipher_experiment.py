@@ -394,6 +394,7 @@ def main():
     parser = argparse.ArgumentParser(description="E3: CIPHER Experiments")
 
     parser.add_argument("--n_episodes", type=int, default=10)
+    parser.add_argument("--base_seed", type=int, default=42)
     parser.add_argument("--top_k", type=int, default=100)
     parser.add_argument("--n_soft_tokens", type=int, default=1)
     parser.add_argument("--model", type=str, default="Qwen/Qwen2.5-3B-Instruct")
@@ -405,6 +406,7 @@ def main():
     config = CIPHERExperimentConfig(
         model_name=args.model,
         n_episodes=args.n_episodes,
+        base_seed=args.base_seed,
         top_k=args.top_k,
         n_soft_tokens=args.n_soft_tokens,
         device=args.device,
