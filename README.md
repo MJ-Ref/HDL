@@ -123,6 +123,8 @@ lpca/
 | Document | Description |
 |----------|-------------|
 | [PLAN.md](PLAN.md) | Master research plan with milestones |
+| [docs/STEPWISE_EXECUTION_PLAN.md](docs/STEPWISE_EXECUTION_PLAN.md) | Date-free stepwise execution checklist |
+| [configs/full_suite_frozen.yaml](configs/full_suite_frozen.yaml) | Frozen canonical benchmark suite configuration |
 | [EXPERIMENTS.md](EXPERIMENTS.md) | Detailed experimental protocols |
 | [docs/experiments/](docs/experiments/) | Versioned experiment attempts with decision logs |
 | [docs/ARTIFACT_INDEX.md](docs/ARTIFACT_INDEX.md) | Artifact-level mapping from headline numbers to files |

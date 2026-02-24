@@ -1,0 +1,112 @@
+version: 1
+suite_name: lpca_full_suite
+seed_registry_path: configs/seeds/full_suite_seed_registry.json
+output_root: outputs/full_suite
+default_device: mps
+
+episodes:
+  e1: 100
+  e2: 100
+  e3: 100
+  e4: 100
+  m2_eval: 100
+
+m2:
+  k: 16
+  epochs: 10
+  data_path: data/m2_train.jsonl
+
+models:
+  - name: qwen_3b
+    model_id: Qwen/Qwen2.5-3B-Instruct
+  - name: llama_3b
+    model_id: meta-llama/Llama-3.2-3B-Instruct
+  - name: mistral_7b
+    model_id: mistralai/Mistral-7B-Instruct-v0.3
+
+experiments:
+  E1:
+    enabled: true
+    command:
+      - python
+      - scripts/run_llm_experiment.py
+      - --protocols
+      - P0,P1
+      - --n_episodes
+      - "{e1_episodes}"
+      - --model
+      - "{model_id}"
+      - --device
+      - "{device}"
+      - --output
+      - "{output_dir}"
+    artifact_glob: "{output_dir}/llm_constraint_satisfaction_*/summary.json"
+
+  E2:
+    enabled: true
+    command:
+      - python
+      - scripts/run_e2_sweep.py
+      - --protocols
+      - P2,P5
+      - --n_episodes
+      - "{e2_episodes}"
+      - --model
+      - "{model_id}"
+      - --device
+      - "{device}"
+      - --output
+      - "{output_dir}"
+    artifact_glob: "{output_dir}/e2_sweep_*/results.json"
+
+  E3:
+    enabled: true
+    command:
+      - python
+      - scripts/run_cipher_experiment.py
+      - --n_episodes
+      - "{e3_episodes}"
+      - --model
+      - "{model_id}"
+      - --device
+      - "{device}"
+      - --output
+      - "{output_dir}"
+    artifact_glob: "{output_dir}/cipher_e0_*/summary.json"
+
+  E4:
+    enabled: true
+    command:
+      - python
+      - scripts/run_activation_experiment.py
+      - --layer
+      - "18"
+      - --combine
+      - replace
+      - --n_episodes
+      - "{e4_episodes}"
+      - --model
+      - "{model_id}"
+      - --device
+      - "{device}"
+      - --output
+      - "{output_dir}"
+    artifact_glob: "{output_dir}/activation_grafting_*/summary.json"
+
+  M2:
+    enabled: false
+    command:
+      - python
+      - modal/train_m2_codec.py
+      - --local
+      - --k
+      - "{m2_k}"
+      - --epochs
+      - "{m2_epochs}"
+      - --data
+      - "{m2_data_path}"
+      - --device
+      - "{device}"
+      - --eval-episodes
+      - "{m2_eval_episodes}"
+    artifact_glob: "checkpoints/*_eval.json"

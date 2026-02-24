@@ -1,0 +1,17 @@
+{
+  "version": 1,
+  "seed_sets": {
+    "pilot": {
+      "start": 42,
+      "count": 30
+    },
+    "key_comparisons": {
+      "start": 1000,
+      "count": 100
+    },
+    "m2_eval": {
+      "start": 2000,
+      "count": 100
+    }
+  }
+}
