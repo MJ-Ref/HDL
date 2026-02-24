@@ -31,6 +31,12 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 import random
 
+# Ensure repository-local imports (e.g., `lpca`) work when invoked as
+# `python modal/train_m2_codec.py`.
+REPO_ROOT = Path(__file__).resolve().parents[1]
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
+
 # Check if running on Modal
 MODAL_AVAILABLE = False
 try:
@@ -2678,6 +2684,19 @@ def main():
                     curriculum_ramp_steps=args.curriculum_ramp_steps,
                 )
                 print(f"\nResult: {result}")
+                eval_path = args.output or args.eval_only.replace(".pt", "_eval.json")
+                write_json(
+                    eval_path,
+                    {
+                        **result,
+                        "config": asdict(
+                            build_config(
+                                k_vectors=args.k,
+                                eval_episodes=args.eval_episodes,
+                            )
+                        ),
+                    },
+                )
         return
 
     if args.sweep:
@@ -2732,6 +2751,14 @@ def main():
                 # Collect results
                 for r in results:
                     print(f"\nk={r['k']}: {r['gates']}")
+                if args.output:
+                    write_json(
+                        args.output,
+                        {
+                            "results": results,
+                            "config": asdict(build_config()),
+                        },
+                    )
 
     else:
         # Single k training
@@ -2774,6 +2801,14 @@ def main():
                     curriculum_ramp_steps=args.curriculum_ramp_steps,
                 )
                 print(f"\nResult: {result}")
+                if args.output:
+                    write_json(
+                        args.output,
+                        {
+                            **result,
+                            "config": asdict(build_config()),
+                        },
+                    )
 
 
 if __name__ == "__main__":

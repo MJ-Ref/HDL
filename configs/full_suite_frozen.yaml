@@ -28,8 +28,8 @@ m2:
 models:
   - name: qwen_3b
     model_id: Qwen/Qwen2.5-3B-Instruct
-  - name: llama_3b
-    model_id: meta-llama/Llama-3.2-3B-Instruct
+  - name: phi3_mini
+    model_id: microsoft/Phi-3-mini-4k-instruct
   - name: mistral_7b
     model_id: mistralai/Mistral-7B-Instruct-v0.3
 
@@ -115,7 +115,6 @@ experiments:
     command:
       - python
       - modal/train_m2_codec.py
-      - --local
       - --codec-variant
       - m2v2
       - --k
