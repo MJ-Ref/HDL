@@ -10,7 +10,7 @@ This is the execution track for the ambitious program, without date gating.
 - [x] Add artifact index generation mapped to concrete files.
 - [x] Add model-matrix execution mode for 3 backbones with paired seeds.
 - [x] Add preregistered-stats-only aggregate report generation.
-- [ ] Add M2v2 architecture path (VQ bottleneck + anti-shuffle + MI + curriculum).
+- [x] Add M2v2 architecture path (VQ bottleneck + anti-shuffle + MI + curriculum).
 - [x] Add gate-report generator with CI-backed pass/fail policy.
 - [x] Add reproducibility package builder (lockfile, runbook, main-table reproducer).
 - [x] Add paper-pack generator that emits tables/figures directly from manifests.
