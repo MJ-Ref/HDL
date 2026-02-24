@@ -30,6 +30,7 @@ def parse_ci(value: Any) -> Optional[Tuple[float, float]]:
 
 def row(
     model: str,
+    seed_set: str,
     experiment: str,
     metric: str,
     success_rate: float,
@@ -39,6 +40,7 @@ def row(
 ) -> Dict[str, Any]:
     return {
         "model": model,
+        "seed_set": seed_set,
         "experiment": experiment,
         "metric": metric,
         "success_rate": float(success_rate),
@@ -49,7 +51,7 @@ def row(
 
 
 def parse_e1(
-    model: str, artifact_path: Path, rel_artifact: str
+    model: str, seed_set: str, artifact_path: Path, rel_artifact: str
 ) -> List[Dict[str, Any]]:
     data = load_json(artifact_path)
     results = data.get("results", {})
@@ -61,6 +63,7 @@ def parse_e1(
         rows.append(
             row(
                 model=model,
+                seed_set=seed_set,
                 experiment="E1",
                 metric=f"{protocol}.success_rate",
                 success_rate=protocol_result.get("success_rate", 0.0),
@@ -73,7 +76,7 @@ def parse_e1(
 
 
 def parse_e2(
-    model: str, artifact_path: Path, rel_artifact: str
+    model: str, seed_set: str, artifact_path: Path, rel_artifact: str
 ) -> List[Dict[str, Any]]:
     data = load_json(artifact_path)
     entries = data.get("results", [])
@@ -87,6 +90,7 @@ def parse_e2(
         rows.append(
             row(
                 model=model,
+                seed_set=seed_set,
                 experiment="E2",
                 metric=f"{cfg}.success_rate",
                 success_rate=entry.get("success_rate", 0.0),
@@ -99,7 +103,7 @@ def parse_e2(
 
 
 def parse_e3(
-    model: str, artifact_path: Path, rel_artifact: str
+    model: str, seed_set: str, artifact_path: Path, rel_artifact: str
 ) -> List[Dict[str, Any]]:
     data = load_json(artifact_path)
     e0 = data.get("results", {}).get("E0")
@@ -108,6 +112,7 @@ def parse_e3(
     return [
         row(
             model=model,
+            seed_set=seed_set,
             experiment="E3",
             metric="E0.success_rate",
             success_rate=e0.get("success_rate", 0.0),
@@ -119,7 +124,7 @@ def parse_e3(
 
 
 def parse_e4(
-    model: str, artifact_path: Path, rel_artifact: str
+    model: str, seed_set: str, artifact_path: Path, rel_artifact: str
 ) -> List[Dict[str, Any]]:
     data = load_json(artifact_path)
     main = data.get("results", {}).get("main")
@@ -128,6 +133,7 @@ def parse_e4(
     return [
         row(
             model=model,
+            seed_set=seed_set,
             experiment="E4",
             metric="A0.success_rate",
             success_rate=main.get("success_rate", 0.0),
@@ -153,6 +159,7 @@ def extract_rows(
     warnings: List[str] = []
     for command in manifest.get("commands", []):
         model = command.get("model", "unknown")
+        seed_set = command.get("seed_set", "primary")
         experiment = command.get("experiment", "")
         if experiment not in PARSERS:
             continue
@@ -168,7 +175,7 @@ def extract_rows(
                 and str(artifact_path).startswith(str(repo_root))
                 else str(artifact_path)
             )
-            parsed = parser(model, artifact_path, rel)
+            parsed = parser(model, seed_set, artifact_path, rel)
             if not parsed:
                 warnings.append(f"No parsable rows from {artifact} for {experiment}")
             rows.extend(parsed)
@@ -201,14 +208,17 @@ def render_markdown(report: Dict[str, Any]) -> str:
     lines.append("")
     lines.append("## Metrics")
     lines.append("")
-    lines.append("| Model | Experiment | Metric | Success | 95% CI | N | Artifact |")
-    lines.append("| --- | --- | --- | --- | --- | --- | --- |")
+    lines.append(
+        "| Model | Seed Set | Experiment | Metric | Success | 95% CI | N | Artifact |"
+    )
+    lines.append("| --- | --- | --- | --- | --- | --- | --- | --- |")
     for r in report.get("rows", []):
         ci = r.get("success_ci")
         ci_str = f"[{ci[0]:.3f}, {ci[1]:.3f}]" if ci else "-"
         n = r.get("n_episodes", "-")
         lines.append(
-            f"| {r['model']} | {r['experiment']} | {r['metric']} | "
+            f"| {r['model']} | {r.get('seed_set', 'primary')} | "
+            f"{r['experiment']} | {r['metric']} | "
             f"{r['success_rate']:.3f} | {ci_str} | {n} | {r['artifact']} |"
         )
     warnings = report.get("warnings", [])

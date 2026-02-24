@@ -96,6 +96,42 @@ def parse_csv(arg: str | None) -> List[str]:
     return [x.strip() for x in arg.split(",") if x.strip()]
 
 
+def resolve_seed_sets(
+    config: Dict[str, Any],
+    expanded_seed_registry: Dict[str, List[int]],
+    requested_seed_sets: List[str],
+) -> List[Tuple[str, int, int]]:
+    configured = config.get("seed_usage", {}).get("matrix_sets")
+    if configured is None:
+        configured = [config["seed_usage"]["primary_set"]]
+    if not isinstance(configured, list) or not configured:
+        raise ValueError("seed_usage.matrix_sets must be a non-empty list")
+    if not all(isinstance(x, str) for x in configured):
+        raise ValueError("seed_usage.matrix_sets must contain only seed-set names")
+
+    effective = configured
+    if requested_seed_sets:
+        effective = [x for x in configured if x in requested_seed_sets]
+        missing = [x for x in requested_seed_sets if x not in configured]
+        if missing:
+            raise ValueError(
+                "Requested seed sets are not configured in seed_usage.matrix_sets: "
+                f"{missing}"
+            )
+        if not effective:
+            raise ValueError("No seed sets selected after applying --seed-sets filter")
+
+    resolved: List[Tuple[str, int, int]] = []
+    for name in effective:
+        values = expanded_seed_registry.get(name)
+        if values is None:
+            raise ValueError(f"Seed set {name} not found in registry")
+        if not values:
+            raise ValueError(f"Seed set {name} is empty")
+        resolved.append((name, int(values[0]), len(values)))
+    return resolved
+
+
 def format_command(command_template: List[str], context: Dict[str, Any]) -> List[str]:
     return [str(token).format(**context) for token in command_template]
 
@@ -155,6 +191,49 @@ def validate_config(config: Dict[str, Any]) -> None:
         raise ValueError("Config experiments mapping cannot be empty")
 
 
+def validate_matrix_requirements(
+    config: Dict[str, Any],
+    selected_models: List[Dict[str, Any]],
+    selected_seed_sets: List[Tuple[str, int, int]],
+    runnable_experiments: Dict[str, Any],
+) -> None:
+    reqs = config.get("matrix_requirements", {})
+    if not isinstance(reqs, dict):
+        raise ValueError("matrix_requirements must be a mapping when provided")
+    min_models = int(reqs.get("min_models", 3))
+    min_seed_count = int(reqs.get("min_seed_count", 100))
+
+    if len(selected_models) < min_models:
+        raise ValueError(
+            f"Model matrix requires at least {min_models} models; "
+            f"got {len(selected_models)}"
+        )
+    for seed_set_name, _, seed_count in selected_seed_sets:
+        if seed_count < min_seed_count:
+            raise ValueError(
+                f"Seed set {seed_set_name} has {seed_count} seeds; "
+                f"requires >= {min_seed_count}"
+            )
+
+    exp_to_episode_key = {
+        "E1": "e1",
+        "E2": "e2",
+        "E3": "e3",
+        "E4": "e4",
+        "M2": "m2_eval",
+    }
+    for exp_name in runnable_experiments:
+        episode_key = exp_to_episode_key.get(exp_name)
+        if episode_key is None:
+            continue
+        n_episodes = int(config["episodes"][episode_key])
+        if n_episodes < min_seed_count:
+            raise ValueError(
+                f"Experiment {exp_name} has {n_episodes} episodes; "
+                f"requires >= {min_seed_count} for matrix runs"
+            )
+
+
 def render_summary_markdown(manifest: Dict[str, Any], run_dir: Path) -> Path:
     lines: List[str] = []
     lines.append("# Full Suite Run Summary")
@@ -166,12 +245,13 @@ def render_summary_markdown(manifest: Dict[str, Any], run_dir: Path) -> Path:
     lines.append("## Commands")
     lines.append("")
     lines.append(
-        "| Model | Experiment | Status | Return Code | Elapsed (s) | Artifact Count |"
+        "| Model | Seed Set | Experiment | Status | Return Code | Elapsed (s) | Artifact Count |"
     )
-    lines.append("| --- | --- | --- | --- | --- | --- |")
+    lines.append("| --- | --- | --- | --- | --- | --- | --- |")
     for rec in manifest.get("commands", []):
         lines.append(
-            f"| {rec['model']} | {rec['experiment']} | {rec['status']} | "
+            f"| {rec['model']} | {rec.get('seed_set', '-')} | {rec['experiment']} | "
+            f"{rec['status']} | "
             f"{rec['returncode']} | {rec['elapsed_s']} | {len(rec['artifacts'])} |"
         )
     lines.append("")
@@ -191,15 +271,17 @@ def write_manifest(manifest: Dict[str, Any], run_dir: Path) -> Tuple[Path, Path]
 def build_context(
     config: Dict[str, Any],
     model: Dict[str, str],
+    seed_set_name: str,
     output_dir: Path,
-    primary_base_seed: int,
-    primary_seed_count: int,
+    base_seed: int,
+    seed_count: int,
 ) -> Dict[str, Any]:
     episodes = config["episodes"]
     m2 = config["m2"]
     return {
         "model_name": model["name"],
         "model_id": model["model_id"],
+        "seed_set_name": seed_set_name,
         "device": config["default_device"],
         "output_dir": str(output_dir),
         "e1_episodes": episodes["e1"],
@@ -210,8 +292,8 @@ def build_context(
         "m2_k": m2["k"],
         "m2_epochs": m2["epochs"],
         "m2_data_path": m2["data_path"],
-        "primary_base_seed": primary_base_seed,
-        "primary_seed_count": primary_seed_count,
+        "primary_base_seed": base_seed,
+        "primary_seed_count": seed_count,
     }
 
 
@@ -242,6 +324,15 @@ def main() -> None:
         help="Optional comma-separated experiment keys filter",
     )
     parser.add_argument(
+        "--seed-sets",
+        type=str,
+        default=None,
+        help=(
+            "Optional comma-separated seed-set names filter "
+            "(must be configured in seed_usage.matrix_sets)"
+        ),
+    )
+    parser.add_argument(
         "--run-id",
         type=str,
         default=None,
@@ -263,6 +354,11 @@ def main() -> None:
         action="store_true",
         help="Stop immediately on first failed command",
     )
+    parser.add_argument(
+        "--skip-matrix-requirements",
+        action="store_true",
+        help="Allow partial matrix runs for quick/pilot execution",
+    )
     args = parser.parse_args()
 
     repo_root = Path(__file__).resolve().parents[1]
@@ -281,8 +377,6 @@ def main() -> None:
     primary_seed_values = expanded_seed_registry[primary_seed_set_name]
     if not primary_seed_values:
         raise ValueError(f"Primary seed set {primary_seed_set_name} is empty")
-    primary_base_seed = int(primary_seed_values[0])
-    primary_seed_count = len(primary_seed_values)
 
     run_id = args.run_id or f"run_{uuid.uuid4().hex[:8]}"
     output_root = (
@@ -296,6 +390,7 @@ def main() -> None:
     stages = parse_csv(args.stages)
     model_filter = set(parse_csv(args.models))
     experiment_filter = set(parse_csv(args.experiments))
+    seed_set_filter = parse_csv(args.seed_sets)
 
     selected_models = [
         m for m in config["models"] if not model_filter or m["name"] in model_filter
@@ -310,6 +405,18 @@ def main() -> None:
         for name, cfg in selected_experiments.items()
         if cfg.get("enabled", False)
     }
+    selected_seed_sets = resolve_seed_sets(
+        config=config,
+        expanded_seed_registry=expanded_seed_registry,
+        requested_seed_sets=seed_set_filter,
+    )
+    if not args.skip_matrix_requirements:
+        validate_matrix_requirements(
+            config=config,
+            selected_models=selected_models,
+            selected_seed_sets=selected_seed_sets,
+            runnable_experiments=runnable_experiments,
+        )
 
     manifest: Dict[str, Any] = {
         "suite_name": config["suite_name"],
@@ -323,6 +430,8 @@ def main() -> None:
         "stages_requested": stages,
         "stages_completed": [],
         "models": [m["name"] for m in selected_models],
+        "seed_sets": [seed_set for seed_set, _, _ in selected_seed_sets],
+        "primary_seed_set": primary_seed_set_name,
         "experiments": list(runnable_experiments.keys()),
         "commands": [],
     }
@@ -337,51 +446,63 @@ def main() -> None:
 
     if "run" in stages:
         for model in selected_models:
-            for exp_name, exp_cfg in runnable_experiments.items():
-                output_dir = run_dir / "artifacts" / model["name"] / exp_name
-                log_path = run_dir / "logs" / model["name"] / exp_name / "command.log"
-                output_dir.mkdir(parents=True, exist_ok=True)
+            for seed_set_name, seed_set_base_seed, seed_set_count in selected_seed_sets:
+                for exp_name, exp_cfg in runnable_experiments.items():
+                    output_dir = (
+                        run_dir / "artifacts" / model["name"] / seed_set_name / exp_name
+                    )
+                    log_path = (
+                        run_dir
+                        / "logs"
+                        / model["name"]
+                        / seed_set_name
+                        / exp_name
+                        / "command.log"
+                    )
+                    output_dir.mkdir(parents=True, exist_ok=True)
 
-                context = build_context(
-                    config,
-                    model,
-                    output_dir,
-                    primary_base_seed=primary_base_seed,
-                    primary_seed_count=primary_seed_count,
-                )
-                command = format_command(exp_cfg["command"], context)
+                    context = build_context(
+                        config=config,
+                        model=model,
+                        seed_set_name=seed_set_name,
+                        output_dir=output_dir,
+                        base_seed=seed_set_base_seed,
+                        seed_count=seed_set_count,
+                    )
+                    command = format_command(exp_cfg["command"], context)
 
-                result = run_command(
-                    cmd=command,
-                    cwd=repo_root,
-                    log_path=log_path,
-                    execute=args.execute,
-                )
-
-                artifacts: List[str] = []
-                artifact_glob = exp_cfg.get("artifact_glob")
-                if artifact_glob:
-                    artifacts = discover_artifacts(
-                        repo_root,
-                        artifact_glob.format(**context),
+                    result = run_command(
+                        cmd=command,
+                        cwd=repo_root,
+                        log_path=log_path,
+                        execute=args.execute,
                     )
 
-                record = {
-                    "model": model["name"],
-                    "experiment": exp_name,
-                    "command": command,
-                    "log_path": str(log_path.relative_to(run_dir)),
-                    "status": result["status"],
-                    "returncode": result["returncode"],
-                    "elapsed_s": result["elapsed_s"],
-                    "artifacts": artifacts,
-                }
-                manifest["commands"].append(record)
+                    artifacts: List[str] = []
+                    artifact_glob = exp_cfg.get("artifact_glob")
+                    if artifact_glob:
+                        artifacts = discover_artifacts(
+                            repo_root,
+                            artifact_glob.format(**context),
+                        )
 
-                if args.stop_on_error and result["status"] == "failed":
-                    write_manifest(manifest, run_dir)
-                    print("Stopping on first failed command", file=sys.stderr)
-                    sys.exit(result["returncode"])
+                    record = {
+                        "model": model["name"],
+                        "seed_set": seed_set_name,
+                        "experiment": exp_name,
+                        "command": command,
+                        "log_path": str(log_path.relative_to(run_dir)),
+                        "status": result["status"],
+                        "returncode": result["returncode"],
+                        "elapsed_s": result["elapsed_s"],
+                        "artifacts": artifacts,
+                    }
+                    manifest["commands"].append(record)
+
+                    if args.stop_on_error and result["status"] == "failed":
+                        write_manifest(manifest, run_dir)
+                        print("Stopping on first failed command", file=sys.stderr)
+                        sys.exit(result["returncode"])
 
         manifest["stages_completed"].append("run")
 

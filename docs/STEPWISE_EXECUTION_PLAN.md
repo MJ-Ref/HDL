@@ -8,7 +8,7 @@ This is the execution track for the ambitious program, without date gating.
 - [x] Add a single-command orchestrator to run E1/E2/E3/E4/M2 and write manifests.
 - [x] Add fail-fast behavior to analysis scripts (no demo fallback).
 - [x] Add artifact index generation mapped to concrete files.
-- [ ] Add model-matrix execution mode for 3 backbones with paired seeds.
+- [x] Add model-matrix execution mode for 3 backbones with paired seeds.
 - [x] Add preregistered-stats-only aggregate report generation.
 - [ ] Add M2v2 architecture path (VQ bottleneck + anti-shuffle + MI + curriculum).
 - [x] Add gate-report generator with CI-backed pass/fail policy.

@@ -120,6 +120,7 @@ def ci_to_str(ci: Optional[Tuple[float, float]]) -> str:
 def build_main_table_rows(
     suite_rows: List[Dict[str, Any]],
     gate_status_by_model: Dict[str, Dict[str, Any]],
+    target_seed_set: Optional[str],
 ) -> List[Dict[str, Any]]:
     grouped = rows_by_model(suite_rows)
     all_models = sorted(set(grouped.keys()) | set(gate_status_by_model.keys()))
@@ -137,6 +138,7 @@ def build_main_table_rows(
         delta = (p1 - p0) if (p1 is not None and p0 is not None) else None
         row = {
             "model": model,
+            "seed_set": target_seed_set,
             "e1_p0_success": p0,
             "e1_p0_ci": p0_ci,
             "e1_p0_n": p0_n,
@@ -169,9 +171,9 @@ def markdown_for_main_table(rows: List[Dict[str, Any]]) -> str:
     lines.append("# Main Results Table")
     lines.append("")
     lines.append(
-        "| Model | P0 | P1 | P1-P0 | Best E2 | E2 Success | E0 | A0 | M2 Gate Pass |"
+        "| Model | Seed Set | P0 | P1 | P1-P0 | Best E2 | E2 Success | E0 | A0 | M2 Gate Pass |"
     )
-    lines.append("| --- | --- | --- | --- | --- | --- | --- | --- | --- |")
+    lines.append("| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |")
     for row in rows:
         p0 = "-" if row["e1_p0_success"] is None else f"{row['e1_p0_success']:.3f}"
         p1 = "-" if row["e1_p1_success"] is None else f"{row['e1_p1_success']:.3f}"
@@ -190,7 +192,7 @@ def markdown_for_main_table(rows: List[Dict[str, Any]]) -> str:
             "True" if row["m2_gate_available"] and row["m2_gate_all_pass"] else "False"
         )
         lines.append(
-            f"| {row['model']} | {p0} | {p1} | {delta} | {best_e2} | "
+            f"| {row['model']} | {row['seed_set'] or '-'} | {p0} | {p1} | {delta} | {best_e2} | "
             f"{best_e2_success} | {e0} | {a0} | {gate_pass} |"
         )
     lines.append("")
@@ -230,6 +232,7 @@ def build_figure_data(
     e1_delta = [
         {
             "model": row["model"],
+            "seed_set": row["seed_set"],
             "p0": row["e1_p0_success"],
             "p1": row["e1_p1_success"],
             "delta": row["e1_delta_p1_minus_p0"],
@@ -240,6 +243,7 @@ def build_figure_data(
     latent_baselines = [
         {
             "model": row["model"],
+            "seed_set": row["seed_set"],
             "e0_success": row["e3_e0_success"],
             "a0_success": row["e4_a0_success"],
         }
@@ -308,6 +312,12 @@ def main() -> None:
     parser.add_argument("--manifest", type=str, required=True)
     parser.add_argument("--suite-report", type=str, default=None)
     parser.add_argument("--gate-report", type=str, default=None)
+    parser.add_argument(
+        "--seed-set",
+        type=str,
+        default=None,
+        help="Optional seed-set filter; defaults to manifest.primary_seed_set",
+    )
     parser.add_argument("--output-dir", type=str, default=None)
     args = parser.parse_args()
 
@@ -335,9 +345,24 @@ def main() -> None:
     suite_rows = suite_report.get("rows", [])
     if not isinstance(suite_rows, list):
         raise ValueError("suite_report.rows must be a list")
+    target_seed_set = (
+        args.seed_set
+        if args.seed_set
+        else (
+            str(manifest["primary_seed_set"])
+            if manifest.get("primary_seed_set") is not None
+            else None
+        )
+    )
+    if target_seed_set is not None:
+        suite_rows = [
+            row
+            for row in suite_rows
+            if str(row.get("seed_set", target_seed_set)) == target_seed_set
+        ]
 
     gate_status = extract_gate_status(gate_report) if gate_report is not None else {}
-    main_rows = build_main_table_rows(suite_rows, gate_status)
+    main_rows = build_main_table_rows(suite_rows, gate_status, target_seed_set)
     figure_data = build_figure_data(suite_rows, main_rows, gate_report)
 
     main_csv = output_dir / "main_table.csv"

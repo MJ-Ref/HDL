@@ -94,6 +94,7 @@ def extract_m2_gate_rows(
         if command.get("experiment") != "M2":
             continue
         model = command.get("model", "unknown")
+        seed_set = command.get("seed_set", "primary")
         for artifact in command.get("artifacts", []):
             artifact_path = Path(artifact)
             if not artifact_path.exists():
@@ -110,6 +111,7 @@ def extract_m2_gate_rows(
 
             row = {
                 "model": model,
+                "seed_set": seed_set,
                 "artifact": str(artifact_path),
                 "summary": compute_gate_summary(eval_data, p0_baseline),
                 "existing_gates": data.get("gates"),
@@ -126,15 +128,15 @@ def render_markdown(report: Dict[str, Any], repo_root: Path) -> str:
     lines.append(f"Run ID: `{report.get('run_id', 'unknown')}`")
     lines.append("")
     lines.append(
-        "| Model | Normal CI | Shuffle CI | P0 CI | Normal>P0 | Shuffle<P0 | All Pass | Artifact |"
+        "| Model | Seed Set | Normal CI | Shuffle CI | P0 CI | Normal>P0 | Shuffle<P0 | All Pass | Artifact |"
     )
-    lines.append("| --- | --- | --- | --- | --- | --- | --- | --- |")
+    lines.append("| --- | --- | --- | --- | --- | --- | --- | --- | --- |")
 
     for row in report.get("rows", []):
         summary = row.get("summary", {})
         if not summary.get("available"):
             lines.append(
-                f"| {row.get('model')} | - | - | - | - | - | - | {row.get('artifact')} |"
+                f"| {row.get('model')} | {row.get('seed_set', 'primary')} | - | - | - | - | - | - | {row.get('artifact')} |"
             )
             continue
         normal_ci = summary["normal"]["ci"]
@@ -150,6 +152,7 @@ def render_markdown(report: Dict[str, Any], repo_root: Path) -> str:
         )
         lines.append(
             f"| {row['model']} | "
+            f"{row.get('seed_set', 'primary')} | "
             f"[{normal_ci[0]:.3f}, {normal_ci[1]:.3f}] | "
             f"[{shuffle_ci[0]:.3f}, {shuffle_ci[1]:.3f}] | "
             f"[{p0_ci[0]:.3f}, {p0_ci[1]:.3f}] | "

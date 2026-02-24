@@ -4,6 +4,8 @@ from scripts.run_full_suite import (
     canonical_hash,
     expand_seed_registry,
     format_command,
+    resolve_seed_sets,
+    validate_matrix_requirements,
 )
 
 
@@ -37,3 +39,32 @@ def test_format_command_replaces_placeholders() -> None:
     context = {"model_id": "Qwen/Qwen2.5-3B-Instruct", "e1_episodes": 100}
     cmd = format_command(template, context)
     assert cmd[-3:] == ["Qwen/Qwen2.5-3B-Instruct", "--n_episodes", "100"]
+
+
+def test_resolve_seed_sets_defaults_to_primary() -> None:
+    config = {"seed_usage": {"primary_set": "key_comparisons"}}
+    expanded = {"key_comparisons": [1000, 1001, 1002]}
+    resolved = resolve_seed_sets(config, expanded, [])
+    assert resolved == [("key_comparisons", 1000, 3)]
+
+
+def test_validate_matrix_requirements_passes() -> None:
+    config = {
+        "matrix_requirements": {"min_models": 3, "min_seed_count": 100},
+        "episodes": {
+            "e1": 100,
+            "e2": 100,
+            "e3": 100,
+            "e4": 100,
+            "m2_eval": 100,
+        },
+    }
+    selected_models = [{"name": "a"}, {"name": "b"}, {"name": "c"}]
+    selected_seed_sets = [("key_comparisons", 1000, 100)]
+    runnable_experiments = {"E1": {}, "E2": {}, "E3": {}, "E4": {}}
+    validate_matrix_requirements(
+        config=config,
+        selected_models=selected_models,
+        selected_seed_sets=selected_seed_sets,
+        runnable_experiments=runnable_experiments,
+    )

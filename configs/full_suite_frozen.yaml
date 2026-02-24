@@ -6,6 +6,12 @@ default_device: mps
 
 seed_usage:
   primary_set: key_comparisons
+  matrix_sets:
+    - key_comparisons
+
+matrix_requirements:
+  min_models: 3
+  min_seed_count: 100
 
 episodes:
   e1: 100

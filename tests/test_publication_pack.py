@@ -65,9 +65,10 @@ def test_build_main_table_rows_uses_best_e2_and_gate() -> None:
         ]
     }
     gate_status = extract_gate_status(gate_report)
-    rows = build_main_table_rows(suite_rows, gate_status)
+    rows = build_main_table_rows(suite_rows, gate_status, "key_comparisons")
     assert len(rows) == 1
     row = rows[0]
+    assert row["seed_set"] == "key_comparisons"
     assert row["e2_best_metric"] == "P5_64B.success_rate"
     assert row["e2_best_success"] == 0.58
     assert row["e1_delta_p1_minus_p0"] == pytest.approx(0.22)
