@@ -139,7 +139,7 @@ def build_runbook(
         "python scripts/run_full_suite.py \\",
         f"  --config {config_path} \\",
         f"  --run-id {run_id} \\",
-        "  --stages prepare,run,aggregate,gate,paper,package,render,publish \\",
+        "  --stages prepare,run,aggregate,gate,paper,render,package,publish \\",
         "  --execute",
         "```",
         "",

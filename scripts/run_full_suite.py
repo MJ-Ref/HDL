@@ -308,7 +308,7 @@ def main() -> None:
     parser.add_argument(
         "--stages",
         type=str,
-        default="prepare,run,aggregate,gate,paper,package,render,publish",
+        default="prepare,run,aggregate,gate,paper,render,package,publish",
         help="Comma-separated stages to run",
     )
     parser.add_argument(
@@ -445,6 +445,7 @@ def main() -> None:
         manifest["stages_completed"].append("prepare")
 
     if "run" in stages:
+        run_failed = False
         for model in selected_models:
             for seed_set_name, seed_set_base_seed, seed_set_count in selected_seed_sets:
                 for exp_name, exp_cfg in runnable_experiments.items():
@@ -499,12 +500,15 @@ def main() -> None:
                     }
                     manifest["commands"].append(record)
 
-                    if args.stop_on_error and result["status"] == "failed":
-                        write_manifest(manifest, run_dir)
-                        print("Stopping on first failed command", file=sys.stderr)
-                        sys.exit(result["returncode"])
+                    if result["status"] == "failed":
+                        run_failed = True
+                        if args.stop_on_error:
+                            write_manifest(manifest, run_dir)
+                            print("Stopping on first failed command", file=sys.stderr)
+                            sys.exit(result["returncode"])
 
-        manifest["stages_completed"].append("run")
+        if not run_failed:
+            manifest["stages_completed"].append("run")
 
     if "aggregate" in stages:
         # Persist intermediate manifest for downstream analysis scripts.
@@ -513,6 +517,11 @@ def main() -> None:
         agg_log = run_dir / "logs" / "aggregate_artifact_index.log"
         agg_cmd = ["python", "scripts/analysis/generate_artifact_index.py"]
         agg_result = run_command(agg_cmd, repo_root, agg_log, args.execute)
+        agg_artifacts = (
+            [str((repo_root / "docs/ARTIFACT_INDEX.md").resolve())]
+            if agg_result["status"] != "failed"
+            else []
+        )
         manifest["commands"].append(
             {
                 "model": "global",
@@ -522,7 +531,7 @@ def main() -> None:
                 "status": agg_result["status"],
                 "returncode": agg_result["returncode"],
                 "elapsed_s": agg_result["elapsed_s"],
-                "artifacts": [str((repo_root / "docs/ARTIFACT_INDEX.md").resolve())],
+                "artifacts": agg_artifacts,
             }
         )
 
@@ -538,6 +547,14 @@ def main() -> None:
             str(run_dir / "suite_report.md"),
         ]
         suite_result = run_command(suite_cmd, repo_root, suite_log, args.execute)
+        suite_artifacts = (
+            [
+                str((run_dir / "suite_report.json").resolve()),
+                str((run_dir / "suite_report.md").resolve()),
+            ]
+            if suite_result["status"] != "failed"
+            else []
+        )
         manifest["commands"].append(
             {
                 "model": "global",
@@ -547,13 +564,18 @@ def main() -> None:
                 "status": suite_result["status"],
                 "returncode": suite_result["returncode"],
                 "elapsed_s": suite_result["elapsed_s"],
-                "artifacts": [
-                    str((run_dir / "suite_report.json").resolve()),
-                    str((run_dir / "suite_report.md").resolve()),
-                ],
+                "artifacts": suite_artifacts,
             }
         )
-        manifest["stages_completed"].append("aggregate")
+        aggregate_failed = (
+            agg_result["status"] == "failed" or suite_result["status"] == "failed"
+        )
+        if aggregate_failed and args.stop_on_error:
+            write_manifest(manifest, run_dir)
+            print("Stopping on first failed aggregate command", file=sys.stderr)
+            sys.exit(1)
+        if not aggregate_failed:
+            manifest["stages_completed"].append("aggregate")
 
     if "gate" in stages:
         (run_dir / "manifest.json").write_text(json.dumps(manifest, indent=2))
@@ -569,6 +591,14 @@ def main() -> None:
             str(run_dir / "m2_gate_report.md"),
         ]
         gate_result = run_command(gate_cmd, repo_root, gate_log, args.execute)
+        gate_artifacts = (
+            [
+                str((run_dir / "m2_gate_report.json").resolve()),
+                str((run_dir / "m2_gate_report.md").resolve()),
+            ]
+            if gate_result["status"] != "failed"
+            else []
+        )
         manifest["commands"].append(
             {
                 "model": "global",
@@ -578,13 +608,15 @@ def main() -> None:
                 "status": gate_result["status"],
                 "returncode": gate_result["returncode"],
                 "elapsed_s": gate_result["elapsed_s"],
-                "artifacts": [
-                    str((run_dir / "m2_gate_report.json").resolve()),
-                    str((run_dir / "m2_gate_report.md").resolve()),
-                ],
+                "artifacts": gate_artifacts,
             }
         )
-        manifest["stages_completed"].append("gate")
+        if gate_result["status"] == "failed" and args.stop_on_error:
+            write_manifest(manifest, run_dir)
+            print("Stopping on first failed gate command", file=sys.stderr)
+            sys.exit(gate_result["returncode"])
+        if gate_result["status"] != "failed":
+            manifest["stages_completed"].append("gate")
 
     if "paper" in stages:
         (run_dir / "manifest.json").write_text(json.dumps(manifest, indent=2))
@@ -602,6 +634,17 @@ def main() -> None:
             str(run_dir / "paper_pack"),
         ]
         paper_result = run_command(paper_cmd, repo_root, paper_log, args.execute)
+        paper_artifacts = (
+            [
+                str((run_dir / "paper_pack" / "main_table.csv").resolve()),
+                str((run_dir / "paper_pack" / "main_table.md").resolve()),
+                str((run_dir / "paper_pack" / "m2_gate_table.md").resolve()),
+                str((run_dir / "paper_pack" / "figure_data.json").resolve()),
+                str((run_dir / "paper_pack" / "paper_pack_manifest.json").resolve()),
+            ]
+            if paper_result["status"] != "failed"
+            else []
+        )
         manifest["commands"].append(
             {
                 "model": "global",
@@ -611,18 +654,19 @@ def main() -> None:
                 "status": paper_result["status"],
                 "returncode": paper_result["returncode"],
                 "elapsed_s": paper_result["elapsed_s"],
-                "artifacts": [
-                    str((run_dir / "paper_pack" / "main_table.csv").resolve()),
-                    str((run_dir / "paper_pack" / "main_table.md").resolve()),
-                    str((run_dir / "paper_pack" / "m2_gate_table.md").resolve()),
-                    str((run_dir / "paper_pack" / "figure_data.json").resolve()),
-                    str(
-                        (run_dir / "paper_pack" / "paper_pack_manifest.json").resolve()
-                    ),
-                ],
+                "artifacts": paper_artifacts,
             }
         )
-        manifest["stages_completed"].append("paper")
+        if paper_result["status"] == "failed" and args.stop_on_error:
+            write_manifest(manifest, run_dir)
+            print("Stopping on first failed paper command", file=sys.stderr)
+            sys.exit(paper_result["returncode"])
+        if paper_result["status"] != "failed":
+            manifest["stages_completed"].append("paper")
+
+    if "render" in stages:
+        render_summary_markdown(manifest, run_dir)
+        manifest["stages_completed"].append("render")
 
     if "package" in stages:
         (run_dir / "manifest.json").write_text(json.dumps(manifest, indent=2))
@@ -636,6 +680,20 @@ def main() -> None:
             str(run_dir / "repro_package"),
         ]
         package_result = run_command(package_cmd, repo_root, package_log, args.execute)
+        package_artifacts = (
+            [
+                str((run_dir / "repro_package" / "RUNBOOK.md").resolve()),
+                str((run_dir / "repro_package" / "environment_lock.txt").resolve()),
+                str((run_dir / "repro_package" / "reproduce_main_table.sh").resolve()),
+                str(
+                    (
+                        run_dir / "repro_package" / "repro_package_manifest.json"
+                    ).resolve()
+                ),
+            ]
+            if package_result["status"] != "failed"
+            else []
+        )
         manifest["commands"].append(
             {
                 "model": "global",
@@ -645,31 +703,28 @@ def main() -> None:
                 "status": package_result["status"],
                 "returncode": package_result["returncode"],
                 "elapsed_s": package_result["elapsed_s"],
-                "artifacts": [
-                    str((run_dir / "repro_package" / "RUNBOOK.md").resolve()),
-                    str((run_dir / "repro_package" / "environment_lock.txt").resolve()),
-                    str(
-                        (
-                            run_dir / "repro_package" / "reproduce_main_table.sh"
-                        ).resolve()
-                    ),
-                    str(
-                        (
-                            run_dir / "repro_package" / "repro_package_manifest.json"
-                        ).resolve()
-                    ),
-                ],
+                "artifacts": package_artifacts,
             }
         )
-        manifest["stages_completed"].append("package")
-
-    if "render" in stages:
-        render_summary_markdown(manifest, run_dir)
-        manifest["stages_completed"].append("render")
+        if package_result["status"] == "failed" and args.stop_on_error:
+            write_manifest(manifest, run_dir)
+            print("Stopping on first failed package command", file=sys.stderr)
+            sys.exit(package_result["returncode"])
+        if package_result["status"] != "failed":
+            manifest["stages_completed"].append("package")
 
     if "publish" in stages:
-        manifest["stages_completed"].append("publish")
+        has_failures = any(c.get("status") == "failed" for c in manifest["commands"])
+        manifest["has_failures"] = has_failures
+        if not has_failures:
+            manifest["stages_completed"].append("publish")
         write_manifest(manifest, run_dir)
+        if has_failures and args.execute:
+            print(
+                "Run completed with failed commands; see manifest for details.",
+                file=sys.stderr,
+            )
+            sys.exit(1)
 
     print(f"Run directory: {run_dir}")
     print(f"Manifest: {run_dir / 'manifest.json'}")

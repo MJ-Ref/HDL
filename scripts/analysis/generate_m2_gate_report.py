@@ -7,10 +7,9 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 from pathlib import Path
 from typing import Any, Dict, List, Tuple
-
-from lpca.core.metrics import MetricsCalculator
 
 
 def load_json(path: Path) -> Dict[str, Any]:
@@ -22,8 +21,17 @@ def load_json(path: Path) -> Dict[str, Any]:
 
 
 def wilson_from_counts(successes: int, n: int) -> Tuple[float, float]:
-    calc = MetricsCalculator()
-    return calc.wilson_ci(successes, n)
+    if n <= 0:
+        return (0.0, 1.0)
+    p_hat = successes / n
+    z = 1.959963984540054  # 95% CI
+    z2 = z * z
+    denominator = 1.0 + z2 / n
+    center = (p_hat + z2 / (2.0 * n)) / denominator
+    margin = (
+        z * math.sqrt((p_hat * (1.0 - p_hat) / n) + (z2 / (4.0 * n * n))) / denominator
+    )
+    return (max(0.0, center - margin), min(1.0, center + margin))
 
 
 def infer_counts(condition: Dict[str, Any]) -> Tuple[int, int]:

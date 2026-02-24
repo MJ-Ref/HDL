@@ -2353,6 +2353,9 @@ def check_gates(results: Dict[str, Any], config: M2Config) -> Dict[str, bool]:
 
     print(f"\nOverall ablation validity: {'PASS' if all_ablations_pass else 'FAIL'}")
 
+    # Normalize potential numpy.bool_ values to native booleans for JSON output.
+    gates = {k: bool(v) for k, v in gates.items()}
+
     return gates
 
 
@@ -2382,7 +2385,7 @@ if MODAL_AVAILABLE:
 
     @app.function(
         gpu="A100",
-        timeout=7200,  # 2 hours
+        timeout=21600,  # 6 hours
         image=image,
         volumes={"/data": volume},
     )
@@ -2598,6 +2601,11 @@ def main():
         suffix = out.suffix if out.suffix else ".json"
         return str(out.with_name(f"{out.stem}_k{k}{suffix}"))
 
+    def resolve_modal_data_path(path: str) -> str:
+        if path.startswith("/data/"):
+            return path
+        return f"/data/{Path(path).name}"
+
     # Plumbing proof mode
     if args.plumbing_proof:
         config = build_config(k_vectors=args.k)
@@ -2672,7 +2680,7 @@ def main():
                 result = train_on_modal.remote(
                     args.k,
                     0,
-                    "/data/m2_train.jsonl",
+                    resolve_modal_data_path(args.data),
                     eval_only=args.eval_only,
                     eval_episodes=args.eval_episodes,
                     model_name=args.model,
@@ -2738,7 +2746,8 @@ def main():
                     result = train_on_modal.remote(
                         k,
                         args.epochs,
-                        "/data/m2_train.jsonl",
+                        resolve_modal_data_path(args.data),
+                        eval_episodes=args.eval_episodes,
                         model_name=args.model,
                         base_seed=args.base_seed,
                         codec_variant=args.codec_variant,
@@ -2791,7 +2800,8 @@ def main():
                 result = train_on_modal.remote(
                     args.k,
                     args.epochs,
-                    "/data/m2_train.jsonl",
+                    resolve_modal_data_path(args.data),
+                    eval_episodes=args.eval_episodes,
                     model_name=args.model,
                     base_seed=args.base_seed,
                     codec_variant=args.codec_variant,
