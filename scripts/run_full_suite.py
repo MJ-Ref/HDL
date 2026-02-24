@@ -20,7 +20,7 @@ import sys
 import time
 import uuid
 from pathlib import Path
-from typing import Any, Dict, List, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 
 REQUIRED_CONFIG_KEYS = [
@@ -34,6 +34,7 @@ REQUIRED_CONFIG_KEYS = [
     "models",
     "experiments",
 ]
+SUCCESS_STATUSES = {"success", "dry_run"}
 
 
 def load_yaml(path: Path) -> Dict[str, Any]:
@@ -144,6 +145,75 @@ def discover_artifacts(repo_root: Path, pattern: str) -> List[str]:
     return [str(Path(m).resolve()) for m in matches]
 
 
+def compute_command_id(
+    *,
+    model: str,
+    seed_set: str,
+    experiment: str,
+    command: List[str],
+) -> str:
+    payload = {
+        "model": model,
+        "seed_set": seed_set,
+        "experiment": experiment,
+        "command": command,
+    }
+    return canonical_hash(payload)[:16]
+
+
+def normalize_command_record(record: Dict[str, Any]) -> Dict[str, Any]:
+    normalized = dict(record)
+    model = str(normalized.get("model", "unknown"))
+    seed_set = str(normalized.get("seed_set", "-"))
+    experiment = str(normalized.get("experiment", "unknown"))
+    command = normalized.get("command") or []
+    if isinstance(command, str):
+        command = [command]
+    command = [str(token) for token in command]
+
+    normalized["model"] = model
+    normalized["seed_set"] = seed_set
+    normalized["experiment"] = experiment
+    normalized["command"] = command
+    normalized.setdefault("log_path", "")
+    normalized.setdefault("status", "unknown")
+    normalized.setdefault("returncode", -1)
+    normalized.setdefault("elapsed_s", 0.0)
+    normalized.setdefault("artifacts", [])
+    normalized["command_id"] = normalized.get("command_id") or compute_command_id(
+        model=model,
+        seed_set=seed_set,
+        experiment=experiment,
+        command=command,
+    )
+    return normalized
+
+
+def find_command_record(
+    commands: List[Dict[str, Any]], command_id: str
+) -> Optional[Dict[str, Any]]:
+    for record in commands:
+        if record.get("command_id") == command_id:
+            return record
+    return None
+
+
+def upsert_command_record(manifest: Dict[str, Any], record: Dict[str, Any]) -> None:
+    normalized = normalize_command_record(record)
+    commands = manifest.setdefault("commands", [])
+    for idx, existing in enumerate(commands):
+        if existing.get("command_id") == normalized["command_id"]:
+            commands[idx] = normalized
+            return
+    commands.append(normalized)
+
+
+def mark_stage_complete(manifest: Dict[str, Any], stage: str) -> None:
+    completed = manifest.setdefault("stages_completed", [])
+    if stage not in completed:
+        completed.append(stage)
+
+
 def run_command(
     cmd: List[str],
     cwd: Path,
@@ -161,22 +231,27 @@ def run_command(
             "elapsed_s": 0.0,
         }
 
-    proc = subprocess.run(
-        cmd,
-        cwd=cwd,
-        capture_output=True,
-        text=True,
-    )
-    output = (
-        f"$ {' '.join(cmd)}\n\n"
-        f"=== STDOUT ===\n{proc.stdout}\n\n"
-        f"=== STDERR ===\n{proc.stderr}\n"
-    )
-    log_path.write_text(output)
+    with open(log_path, "w", encoding="utf-8") as log_file:
+        log_file.write(f"$ {' '.join(cmd)}\n\n")
+        log_file.flush()
+        proc = subprocess.Popen(
+            cmd,
+            cwd=cwd,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            bufsize=1,
+        )
+        assert proc.stdout is not None
+        for line in proc.stdout:
+            log_file.write(line)
+        returncode = proc.wait()
+        log_file.write(f"\n[exit_code]={returncode}\n")
+        log_file.flush()
 
     return {
-        "status": "success" if proc.returncode == 0 else "failed",
-        "returncode": proc.returncode,
+        "status": "success" if returncode == 0 else "failed",
+        "returncode": returncode,
         "elapsed_s": round(time.time() - started, 3),
     }
 
@@ -339,6 +414,11 @@ def main() -> None:
         help="Optional run id override",
     )
     parser.add_argument(
+        "--resume",
+        action="store_true",
+        help="Resume an existing run-id and skip completed commands",
+    )
+    parser.add_argument(
         "--output-root",
         type=str,
         default=None,
@@ -377,6 +457,9 @@ def main() -> None:
     primary_seed_values = expanded_seed_registry[primary_seed_set_name]
     if not primary_seed_values:
         raise ValueError(f"Primary seed set {primary_seed_set_name} is empty")
+
+    if args.resume and not args.run_id:
+        raise ValueError("--resume requires --run-id")
 
     run_id = args.run_id or f"run_{uuid.uuid4().hex[:8]}"
     output_root = (
@@ -418,7 +501,7 @@ def main() -> None:
             runnable_experiments=runnable_experiments,
         )
 
-    manifest: Dict[str, Any] = {
+    manifest_base: Dict[str, Any] = {
         "suite_name": config["suite_name"],
         "run_id": run_id,
         "execute": args.execute,
@@ -436,15 +519,60 @@ def main() -> None:
         "commands": [],
     }
 
+    manifest_path = run_dir / "manifest.json"
+    if args.resume:
+        if not manifest_path.exists():
+            raise ValueError(
+                f"--resume requested but manifest not found: {manifest_path}"
+            )
+        manifest = json.loads(manifest_path.read_text())
+        manifest["commands"] = [
+            normalize_command_record(rec) for rec in manifest.get("commands", [])
+        ]
+
+        mismatches: List[str] = []
+        for key in (
+            "suite_name",
+            "run_id",
+            "config_hash",
+            "seed_hash",
+            "config_path",
+            "seed_registry_path",
+            "models",
+            "seed_sets",
+            "experiments",
+        ):
+            if manifest.get(key) != manifest_base.get(key):
+                mismatches.append(key)
+        if bool(manifest.get("execute")) != bool(args.execute):
+            mismatches.append("execute")
+        if mismatches:
+            raise ValueError(
+                "Resume manifest does not match requested run context; "
+                f"mismatched keys: {mismatches}"
+            )
+        manifest["stages_requested"] = stages
+        manifest["git_sha"] = get_git_sha(repo_root)
+    else:
+        if manifest_path.exists():
+            raise ValueError(
+                f"Manifest already exists for run_id={run_id}. "
+                "Use --resume to continue or choose a new --run-id."
+            )
+        manifest = manifest_base
+
     (run_dir / "resolved_config.json").write_text(json.dumps(config, indent=2))
     (run_dir / "resolved_seed_registry.json").write_text(
         json.dumps(expanded_seed_registry, indent=2)
     )
 
-    if "prepare" in stages:
-        manifest["stages_completed"].append("prepare")
+    write_manifest(manifest, run_dir)
 
-    if "run" in stages:
+    if "prepare" in stages and "prepare" not in manifest["stages_completed"]:
+        mark_stage_complete(manifest, "prepare")
+        write_manifest(manifest, run_dir)
+
+    if "run" in stages and "run" not in manifest["stages_completed"]:
         run_failed = False
         for model in selected_models:
             for seed_set_name, seed_set_base_seed, seed_set_count in selected_seed_sets:
@@ -471,6 +599,15 @@ def main() -> None:
                         seed_count=seed_set_count,
                     )
                     command = format_command(exp_cfg["command"], context)
+                    command_id = compute_command_id(
+                        model=model["name"],
+                        seed_set=seed_set_name,
+                        experiment=exp_name,
+                        command=command,
+                    )
+                    existing = find_command_record(manifest["commands"], command_id)
+                    if existing and existing.get("status") in SUCCESS_STATUSES:
+                        continue
 
                     result = run_command(
                         cmd=command,
@@ -487,18 +624,22 @@ def main() -> None:
                             artifact_glob.format(**context),
                         )
 
-                    record = {
-                        "model": model["name"],
-                        "seed_set": seed_set_name,
-                        "experiment": exp_name,
-                        "command": command,
-                        "log_path": str(log_path.relative_to(run_dir)),
-                        "status": result["status"],
-                        "returncode": result["returncode"],
-                        "elapsed_s": result["elapsed_s"],
-                        "artifacts": artifacts,
-                    }
-                    manifest["commands"].append(record)
+                    upsert_command_record(
+                        manifest,
+                        {
+                            "command_id": command_id,
+                            "model": model["name"],
+                            "seed_set": seed_set_name,
+                            "experiment": exp_name,
+                            "command": command,
+                            "log_path": str(log_path.relative_to(run_dir)),
+                            "status": result["status"],
+                            "returncode": result["returncode"],
+                            "elapsed_s": result["elapsed_s"],
+                            "artifacts": artifacts,
+                        },
+                    )
+                    write_manifest(manifest, run_dir)
 
                     if result["status"] == "failed":
                         run_failed = True
@@ -508,11 +649,12 @@ def main() -> None:
                             sys.exit(result["returncode"])
 
         if not run_failed:
-            manifest["stages_completed"].append("run")
+            mark_stage_complete(manifest, "run")
+            write_manifest(manifest, run_dir)
 
-    if "aggregate" in stages:
+    if "aggregate" in stages and "aggregate" not in manifest["stages_completed"]:
         # Persist intermediate manifest for downstream analysis scripts.
-        (run_dir / "manifest.json").write_text(json.dumps(manifest, indent=2))
+        write_manifest(manifest, run_dir)
 
         agg_log = run_dir / "logs" / "aggregate_artifact_index.log"
         agg_cmd = ["python", "scripts/analysis/generate_artifact_index.py"]
@@ -522,8 +664,15 @@ def main() -> None:
             if agg_result["status"] != "failed"
             else []
         )
-        manifest["commands"].append(
+        upsert_command_record(
+            manifest,
             {
+                "command_id": compute_command_id(
+                    model="global",
+                    seed_set="-",
+                    experiment="aggregate_artifact_index",
+                    command=agg_cmd,
+                ),
                 "model": "global",
                 "experiment": "aggregate_artifact_index",
                 "command": agg_cmd,
@@ -532,8 +681,9 @@ def main() -> None:
                 "returncode": agg_result["returncode"],
                 "elapsed_s": agg_result["elapsed_s"],
                 "artifacts": agg_artifacts,
-            }
+            },
         )
+        write_manifest(manifest, run_dir)
 
         suite_log = run_dir / "logs" / "aggregate_suite_report.log"
         suite_cmd = [
@@ -555,8 +705,15 @@ def main() -> None:
             if suite_result["status"] != "failed"
             else []
         )
-        manifest["commands"].append(
+        upsert_command_record(
+            manifest,
             {
+                "command_id": compute_command_id(
+                    model="global",
+                    seed_set="-",
+                    experiment="aggregate_suite_report",
+                    command=suite_cmd,
+                ),
                 "model": "global",
                 "experiment": "aggregate_suite_report",
                 "command": suite_cmd,
@@ -565,8 +722,10 @@ def main() -> None:
                 "returncode": suite_result["returncode"],
                 "elapsed_s": suite_result["elapsed_s"],
                 "artifacts": suite_artifacts,
-            }
+            },
         )
+        write_manifest(manifest, run_dir)
+
         aggregate_failed = (
             agg_result["status"] == "failed" or suite_result["status"] == "failed"
         )
@@ -575,10 +734,11 @@ def main() -> None:
             print("Stopping on first failed aggregate command", file=sys.stderr)
             sys.exit(1)
         if not aggregate_failed:
-            manifest["stages_completed"].append("aggregate")
+            mark_stage_complete(manifest, "aggregate")
+            write_manifest(manifest, run_dir)
 
-    if "gate" in stages:
-        (run_dir / "manifest.json").write_text(json.dumps(manifest, indent=2))
+    if "gate" in stages and "gate" not in manifest["stages_completed"]:
+        write_manifest(manifest, run_dir)
         gate_log = run_dir / "logs" / "gate_m2_report.log"
         gate_cmd = [
             "python",
@@ -599,8 +759,15 @@ def main() -> None:
             if gate_result["status"] != "failed"
             else []
         )
-        manifest["commands"].append(
+        upsert_command_record(
+            manifest,
             {
+                "command_id": compute_command_id(
+                    model="global",
+                    seed_set="-",
+                    experiment="gate_m2_report",
+                    command=gate_cmd,
+                ),
                 "model": "global",
                 "experiment": "gate_m2_report",
                 "command": gate_cmd,
@@ -609,17 +776,19 @@ def main() -> None:
                 "returncode": gate_result["returncode"],
                 "elapsed_s": gate_result["elapsed_s"],
                 "artifacts": gate_artifacts,
-            }
+            },
         )
+        write_manifest(manifest, run_dir)
         if gate_result["status"] == "failed" and args.stop_on_error:
             write_manifest(manifest, run_dir)
             print("Stopping on first failed gate command", file=sys.stderr)
             sys.exit(gate_result["returncode"])
         if gate_result["status"] != "failed":
-            manifest["stages_completed"].append("gate")
+            mark_stage_complete(manifest, "gate")
+            write_manifest(manifest, run_dir)
 
-    if "paper" in stages:
-        (run_dir / "manifest.json").write_text(json.dumps(manifest, indent=2))
+    if "paper" in stages and "paper" not in manifest["stages_completed"]:
+        write_manifest(manifest, run_dir)
         paper_log = run_dir / "logs" / "paper_pack.log"
         paper_cmd = [
             "python",
@@ -645,8 +814,15 @@ def main() -> None:
             if paper_result["status"] != "failed"
             else []
         )
-        manifest["commands"].append(
+        upsert_command_record(
+            manifest,
             {
+                "command_id": compute_command_id(
+                    model="global",
+                    seed_set="-",
+                    experiment="paper_pack",
+                    command=paper_cmd,
+                ),
                 "model": "global",
                 "experiment": "paper_pack",
                 "command": paper_cmd,
@@ -655,21 +831,24 @@ def main() -> None:
                 "returncode": paper_result["returncode"],
                 "elapsed_s": paper_result["elapsed_s"],
                 "artifacts": paper_artifacts,
-            }
+            },
         )
+        write_manifest(manifest, run_dir)
         if paper_result["status"] == "failed" and args.stop_on_error:
             write_manifest(manifest, run_dir)
             print("Stopping on first failed paper command", file=sys.stderr)
             sys.exit(paper_result["returncode"])
         if paper_result["status"] != "failed":
-            manifest["stages_completed"].append("paper")
+            mark_stage_complete(manifest, "paper")
+            write_manifest(manifest, run_dir)
 
-    if "render" in stages:
+    if "render" in stages and "render" not in manifest["stages_completed"]:
         render_summary_markdown(manifest, run_dir)
-        manifest["stages_completed"].append("render")
+        mark_stage_complete(manifest, "render")
+        write_manifest(manifest, run_dir)
 
-    if "package" in stages:
-        (run_dir / "manifest.json").write_text(json.dumps(manifest, indent=2))
+    if "package" in stages and "package" not in manifest["stages_completed"]:
+        write_manifest(manifest, run_dir)
         package_log = run_dir / "logs" / "package_repro_bundle.log"
         package_cmd = [
             "python",
@@ -694,8 +873,15 @@ def main() -> None:
             if package_result["status"] != "failed"
             else []
         )
-        manifest["commands"].append(
+        upsert_command_record(
+            manifest,
             {
+                "command_id": compute_command_id(
+                    model="global",
+                    seed_set="-",
+                    experiment="package_repro_bundle",
+                    command=package_cmd,
+                ),
                 "model": "global",
                 "experiment": "package_repro_bundle",
                 "command": package_cmd,
@@ -704,20 +890,22 @@ def main() -> None:
                 "returncode": package_result["returncode"],
                 "elapsed_s": package_result["elapsed_s"],
                 "artifacts": package_artifacts,
-            }
+            },
         )
+        write_manifest(manifest, run_dir)
         if package_result["status"] == "failed" and args.stop_on_error:
             write_manifest(manifest, run_dir)
             print("Stopping on first failed package command", file=sys.stderr)
             sys.exit(package_result["returncode"])
         if package_result["status"] != "failed":
-            manifest["stages_completed"].append("package")
+            mark_stage_complete(manifest, "package")
+            write_manifest(manifest, run_dir)
 
-    if "publish" in stages:
+    if "publish" in stages and "publish" not in manifest["stages_completed"]:
         has_failures = any(c.get("status") == "failed" for c in manifest["commands"])
         manifest["has_failures"] = has_failures
         if not has_failures:
-            manifest["stages_completed"].append("publish")
+            mark_stage_complete(manifest, "publish")
         write_manifest(manifest, run_dir)
         if has_failures and args.execute:
             print(

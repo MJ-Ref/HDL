@@ -65,6 +65,8 @@ python scripts/run_full_suite.py \
 Notes:
 
 - Without `--execute`, the orchestrator runs in dry-run mode.
+- Long runs can be resumed with `--run-id <id> --resume` (completed commands are skipped).
+- Command logs are streamed live to `outputs/full_suite/<run_id>/logs/.../command.log`.
 - M2 uses `modal/train_m2_codec.py` and is intended for cloud GPUs.
 - Full matrix requirements are enforced unless `--skip-matrix-requirements` is set.
 

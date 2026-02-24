@@ -82,6 +82,23 @@ python scripts/run_full_suite.py \
   --stop-on-error
 ```
 
+### 4.4 Resume an interrupted run
+
+```bash
+python scripts/run_full_suite.py \
+  --run-id run_lpca_full_suite \
+  --resume \
+  --stages run,aggregate,gate,paper,render,package,publish \
+  --execute \
+  --stop-on-error
+```
+
+Resume behavior:
+
+- Requires an existing `manifest.json` for the same `run_id`.
+- Verifies config/model/seed/experiment context matches before continuing.
+- Skips commands already marked `success` (or `dry_run`) and updates failed entries on retry.
+
 ## 5. Run Directory Contract
 
 Each run writes to `outputs/full_suite/<run_id>/`.

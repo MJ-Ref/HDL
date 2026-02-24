@@ -2,9 +2,12 @@
 
 from scripts.run_full_suite import (
     canonical_hash,
+    compute_command_id,
     expand_seed_registry,
     format_command,
+    normalize_command_record,
     resolve_seed_sets,
+    upsert_command_record,
     validate_matrix_requirements,
 )
 
@@ -68,3 +71,67 @@ def test_validate_matrix_requirements_passes() -> None:
         selected_seed_sets=selected_seed_sets,
         runnable_experiments=runnable_experiments,
     )
+
+
+def test_compute_command_id_stable() -> None:
+    command = ["python", "scripts/run_llm_experiment.py", "--n_episodes", "100"]
+    a = compute_command_id(
+        model="qwen_3b",
+        seed_set="key_comparisons",
+        experiment="E1",
+        command=command,
+    )
+    b = compute_command_id(
+        model="qwen_3b",
+        seed_set="key_comparisons",
+        experiment="E1",
+        command=list(command),
+    )
+    assert a == b
+
+
+def test_upsert_command_record_replaces_existing() -> None:
+    manifest = {"commands": []}
+    command = ["python", "scripts/run_llm_experiment.py", "--n_episodes", "100"]
+    command_id = compute_command_id(
+        model="qwen_3b",
+        seed_set="key_comparisons",
+        experiment="E1",
+        command=command,
+    )
+    upsert_command_record(
+        manifest,
+        {
+            "command_id": command_id,
+            "model": "qwen_3b",
+            "seed_set": "key_comparisons",
+            "experiment": "E1",
+            "command": command,
+            "status": "failed",
+            "returncode": 1,
+            "elapsed_s": 1.0,
+            "artifacts": [],
+            "log_path": "logs/a.log",
+        },
+    )
+    upsert_command_record(
+        manifest,
+        {
+            "command_id": command_id,
+            "model": "qwen_3b",
+            "seed_set": "key_comparisons",
+            "experiment": "E1",
+            "command": command,
+            "status": "success",
+            "returncode": 0,
+            "elapsed_s": 2.0,
+            "artifacts": ["/tmp/out.json"],
+            "log_path": "logs/a.log",
+        },
+    )
+
+    assert len(manifest["commands"]) == 1
+    record = normalize_command_record(manifest["commands"][0])
+    assert record["status"] == "success"
+    assert record["returncode"] == 0
+    assert record["artifacts"] == ["/tmp/out.json"]
