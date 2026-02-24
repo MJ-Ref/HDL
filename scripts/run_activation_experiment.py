@@ -16,7 +16,7 @@ import time
 from dataclasses import asdict, dataclass
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Callable
+from typing import Any, Dict, Callable
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
@@ -25,10 +25,14 @@ import torch
 
 from transformers import AutoModelForCausalLM, AutoTokenizer
 from lpca.agents.model_wrapper import (
-    ModelWrapper, ActivationHook,
-    combine_replace, combine_add, combine_average, combine_weighted
+    ModelWrapper,
+    combine_replace,
+    combine_add,
+    combine_average,
+    combine_weighted,
 )
 from lpca.agents.llm_agent import LLMAgent
+from lpca.core.autoregressive import decode_with_cache
 from lpca.core.metrics import MetricsCalculator
 from lpca.envs.split_synthetic import SplitSyntheticEnv
 
@@ -36,6 +40,7 @@ from lpca.envs.split_synthetic import SplitSyntheticEnv
 @dataclass
 class ActivationExperimentConfig:
     """Configuration for activation grafting experiments."""
+
     experiment_name: str = "activation_grafting"
     model_name: str = "Qwen/Qwen2.5-3B-Instruct"
     task_type: str = "constraint_satisfaction"
@@ -57,7 +62,7 @@ class ActivationGraftingRunner:
         self.config = config
         self.output_dir = Path(output_dir)
 
-        timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         self.experiment_id = f"{config.experiment_name}_{timestamp}"
 
         self.experiment_dir = self.output_dir / self.experiment_id
@@ -98,7 +103,9 @@ class ActivationGraftingRunner:
             self._model = self._model.to("mps")
 
         self._wrapper = ModelWrapper(self._model, self._tokenizer, self.config.device)
-        print(f"Model loaded: {self._wrapper.n_layers} layers, {self._wrapper.d_model} dim")
+        print(
+            f"Model loaded: {self._wrapper.n_layers} layers, {self._wrapper.d_model} dim"
+        )
 
     def get_combine_fn(self, name: str) -> Callable:
         """Get combine function by name."""
@@ -117,19 +124,19 @@ class ActivationGraftingRunner:
         self._load_model()
 
         agent_A = LLMAgent(
-            agent_id='A',
+            agent_id="A",
             model_wrapper=self._wrapper,
             tokenizer=self._tokenizer,
             temperature=self.config.temperature,
         )
         agent_B = LLMAgent(
-            agent_id='B',
+            agent_id="B",
             model_wrapper=self._wrapper,
             tokenizer=self._tokenizer,
             temperature=self.config.temperature,
         )
 
-        return {'A': agent_A, 'B': agent_B}
+        return {"A": agent_A, "B": agent_B}
 
     def run_episode_with_grafting(
         self,
@@ -145,8 +152,8 @@ class ActivationGraftingRunner:
         computation at the specified layer.
         """
         task = self.env.reset(seed)
-        agents['A'].reset()
-        agents['B'].reset()
+        agents["A"].reset()
+        agents["B"].reset()
 
         turns = []
         final_answer = None
@@ -157,94 +164,103 @@ class ActivationGraftingRunner:
         for turn_idx in range(self.config.max_turns):
             # Agent A processes its observation
             # We capture the activation at the graft layer
-            prompt_A = agents['A'].format_prompt(task.obs_A, None)
+            prompt_A = agents["A"].format_prompt(task.obs_A, None)
 
-            if hasattr(self._tokenizer, 'apply_chat_template'):
-                messages_A = agents['A'].format_chat_prompt(task.obs_A, None)
+            if hasattr(self._tokenizer, "apply_chat_template"):
+                messages_A = agents["A"].format_chat_prompt(task.obs_A, None)
                 prompt_A = self._tokenizer.apply_chat_template(
                     messages_A, tokenize=False, add_generation_prompt=True
                 )
 
-            inputs_A = self._tokenizer(prompt_A, return_tensors='pt', truncation=True, max_length=1024)
+            inputs_A = self._tokenizer(
+                prompt_A, return_tensors="pt", truncation=True, max_length=1024
+            )
             inputs_A = {k: v.to(self._wrapper.device) for k, v in inputs_A.items()}
 
             # Capture A's activation
-            activation_A = self._wrapper.capture_activation(inputs_A['input_ids'], layer_idx=graft_layer)
+            activation_A = self._wrapper.capture_activation(
+                inputs_A["input_ids"], layer_idx=graft_layer
+            )
 
             # Generate A's response (for logging, but we use activation for communication)
-            response_A = agents['A'].respond(task.obs_A, None)
+            response_A = agents["A"].respond(task.obs_A, None)
             total_tokens += response_A.input_tokens + response_A.output_tokens
 
-            turns.append({
-                'turn': turn_idx,
-                'agent': 'A',
-                'text': response_A.text[:300],
-                'activation_shape': list(activation_A.shape),
-            })
+            turns.append(
+                {
+                    "turn": turn_idx,
+                    "agent": "A",
+                    "text": response_A.text[:300],
+                    "activation_shape": list(activation_A.shape),
+                }
+            )
 
             if response_A.final_answer:
                 final_answer = response_A.final_answer
                 break
 
             # Agent B processes with grafted activation from A
-            prompt_B = agents['B'].format_prompt(task.obs_B, None)
+            prompt_B = agents["B"].format_prompt(task.obs_B, None)
 
-            if hasattr(self._tokenizer, 'apply_chat_template'):
-                messages_B = agents['B'].format_chat_prompt(task.obs_B, None)
+            if hasattr(self._tokenizer, "apply_chat_template"):
+                messages_B = agents["B"].format_chat_prompt(task.obs_B, None)
                 prompt_B = self._tokenizer.apply_chat_template(
                     messages_B, tokenize=False, add_generation_prompt=True
                 )
 
-            inputs_B = self._tokenizer(prompt_B, return_tensors='pt', truncation=True, max_length=1024)
+            inputs_B = self._tokenizer(
+                prompt_B, return_tensors="pt", truncation=True, max_length=1024
+            )
             inputs_B = {k: v.to(self._wrapper.device) for k, v in inputs_B.items()}
 
             # Inject A's activation into B's forward pass
             # Note: activation shapes may differ, we use last token activation
-            activation_to_inject = activation_A[:, -1:, :].expand(-1, inputs_B['input_ids'].shape[1], -1)
+            activation_to_inject = activation_A[:, -1:, :].expand(
+                -1, inputs_B["input_ids"].shape[1], -1
+            )
 
-            logits_B = self._wrapper.inject_activation(
-                inputs_B['input_ids'],
+            logits_B, past_key_values = self._wrapper.inject_activation(
+                inputs_B["input_ids"],
                 graft_layer,
                 activation_to_inject,
-                combine_fn
+                combine_fn,
+                attention_mask=inputs_B["attention_mask"],
+                return_past_key_values=True,
             )
             total_grafts += 1
 
-            # Generate from modified logits
-            with torch.no_grad():
-                # Sample from modified logits
-                probs = torch.softmax(logits_B[:, -1, :] / self.config.temperature, dim=-1)
-                next_token = torch.multinomial(probs, num_samples=1)
+            # Decode with cache so the injected prefill context is preserved.
+            generated_ids = decode_with_cache(
+                model=self._model,
+                next_logits=logits_B[:, -1, :],
+                past_key_values=past_key_values,
+                base_seq_len=inputs_B["input_ids"].shape[1],
+                max_new_tokens=100,
+                temperature=self.config.temperature,
+                eos_token_id=self._tokenizer.eos_token_id,
+                mask_dtype=inputs_B["attention_mask"].dtype,
+                device=inputs_B["attention_mask"].device,
+            )
 
-                # Continue generation
-                generated_ids = [next_token.item()]
-                current_ids = torch.cat([inputs_B['input_ids'], next_token], dim=1)
-
-                for _ in range(100):  # Max generation length
-                    outputs = self._model(current_ids)
-                    next_probs = torch.softmax(outputs.logits[:, -1, :] / self.config.temperature, dim=-1)
-                    next_token = torch.multinomial(next_probs, num_samples=1)
-                    generated_ids.append(next_token.item())
-                    current_ids = torch.cat([current_ids, next_token], dim=1)
-
-                    if next_token.item() == self._tokenizer.eos_token_id:
-                        break
-
-            generated_text = self._tokenizer.decode(generated_ids, skip_special_tokens=True)
+            generated_text = self._tokenizer.decode(
+                generated_ids, skip_special_tokens=True
+            )
             total_tokens += len(generated_ids)
 
             # Parse B's response
-            agents['B'].add_to_history("assistant", generated_text)
+            agents["B"].add_to_history("assistant", generated_text)
 
-            turns.append({
-                'turn': turn_idx,
-                'agent': 'B',
-                'text': generated_text[:300],
-                'grafted': True,
-            })
+            turns.append(
+                {
+                    "turn": turn_idx,
+                    "agent": "B",
+                    "text": generated_text[:300],
+                    "grafted": True,
+                }
+            )
 
             # Check for final answer
-            final_match = agents['B']._extract_final_answer(generated_text)
+            final_match = agents["B"]._extract_final_answer(generated_text)
             if final_match:
                 final_answer = final_match
                 break
@@ -258,16 +274,16 @@ class ActivationGraftingRunner:
             result = self.env.verify("")
 
         return {
-            'seed': seed,
-            'n_turns': len(turns),
-            'final_answer': final_answer,
-            'success': result.success,
-            'partial_credit': result.partial_credit,
-            'total_grafts': total_grafts,
-            'total_tokens': total_tokens,
-            'elapsed_ms': elapsed_ms,
-            'graft_layer': graft_layer,
-            'combine_fn': self.config.combine_fn,
+            "seed": seed,
+            "n_turns": len(turns),
+            "final_answer": final_answer,
+            "success": result.success,
+            "partial_credit": result.partial_credit,
+            "total_grafts": total_grafts,
+            "total_tokens": total_tokens,
+            "elapsed_ms": elapsed_ms,
+            "graft_layer": graft_layer,
+            "combine_fn": self.config.combine_fn,
         }
 
     def run_config(self, graft_layer: int, combine_name: str) -> Dict[str, Any]:
@@ -294,37 +310,42 @@ class ActivationGraftingRunner:
                 )
                 episodes.append(episode)
 
-                successes.append(episode['success'])
-                partial_credits.append(episode['partial_credit'])
-                turn_counts.append(episode['n_turns'])
+                successes.append(episode["success"])
+                partial_credits.append(episode["partial_credit"])
+                turn_counts.append(episode["n_turns"])
 
-                status = "SUCCESS" if episode['success'] else "FAIL"
-                print(f"  Episode {ep_idx+1}/{self.config.n_episodes}: {status} "
-                      f"(turns={episode['n_turns']}, grafts={episode['total_grafts']})")
+                status = "SUCCESS" if episode["success"] else "FAIL"
+                print(
+                    f"  Episode {ep_idx+1}/{self.config.n_episodes}: {status} "
+                    f"(turns={episode['n_turns']}, grafts={episode['total_grafts']})"
+                )
 
-                if episode['final_answer']:
+                if episode["final_answer"]:
                     print(f"    Answer: {episode['final_answer'][:60]}")
 
             except Exception as e:
                 print(f"  Episode {ep_idx+1}: ERROR - {e}")
                 import traceback
+
                 traceback.print_exc()
                 continue
 
         n = len(successes)
         results = {
-            'config': config_name,
-            'graft_layer': graft_layer,
-            'combine_fn': combine_name,
-            'n_episodes': n,
-            'success_rate': np.mean(successes) if n > 0 else 0,
-            'success_ci': self.metrics.wilson_ci(sum(successes), n) if n > 0 else (0, 0),
-            'partial_credit_mean': np.mean(partial_credits) if n > 0 else 0,
-            'avg_turns': np.mean(turn_counts) if n > 0 else 0,
+            "config": config_name,
+            "graft_layer": graft_layer,
+            "combine_fn": combine_name,
+            "n_episodes": n,
+            "success_rate": np.mean(successes) if n > 0 else 0,
+            "success_ci": self.metrics.wilson_ci(sum(successes), n)
+            if n > 0
+            else (0, 0),
+            "partial_credit_mean": np.mean(partial_credits) if n > 0 else 0,
+            "avg_turns": np.mean(turn_counts) if n > 0 else 0,
         }
 
-        sr = results['success_rate']
-        ci = results['success_ci']
+        sr = results["success_rate"]
+        ci = results["success_ci"]
         print(f"\n  Summary for {config_name}:")
         print(f"    Success Rate: {sr:.1%} (95% CI: [{ci[0]:.1%}, {ci[1]:.1%}])")
         print(f"    Partial Credit: {results['partial_credit_mean']:.3f}")
@@ -364,7 +385,7 @@ class ActivationGraftingRunner:
         self._load_model()
 
         print(f"\n{'='*60}")
-        print(f"E4: Activation Grafting Experiment")
+        print("E4: Activation Grafting Experiment")
         print(f"{'='*60}")
         print(f"Model: {self.config.model_name}")
         print(f"Task: {self.config.task_type}")
@@ -374,7 +395,7 @@ class ActivationGraftingRunner:
         print(f"{'='*60}")
 
         results = self.run_config(self.config.graft_layer, self.config.combine_fn)
-        self.all_results['main'] = results
+        self.all_results["main"] = results
 
         # Save results
         self._save_results()
@@ -384,12 +405,12 @@ class ActivationGraftingRunner:
     def _save_results(self):
         """Save experiment results."""
         summary = {
-            'experiment_id': self.experiment_id,
-            'config': asdict(self.config),
-            'results': self.all_results,
+            "experiment_id": self.experiment_id,
+            "config": asdict(self.config),
+            "results": self.all_results,
         }
 
-        with open(self.experiment_dir / "summary.json", 'w') as f:
+        with open(self.experiment_dir / "summary.json", "w") as f:
             json.dump(summary, f, indent=2, default=str)
 
         print(f"\nResults saved to: {self.experiment_dir}")
@@ -399,11 +420,26 @@ def main():
     parser = argparse.ArgumentParser(description="E4: Activation Grafting Experiments")
 
     parser.add_argument("--layer", type=int, default=18, help="Graft layer index")
-    parser.add_argument("--combine", type=str, default="replace",
-                       choices=["replace", "add", "average", "weighted_0.3", "weighted_0.5", "weighted_0.7"])
+    parser.add_argument(
+        "--combine",
+        type=str,
+        default="replace",
+        choices=[
+            "replace",
+            "add",
+            "average",
+            "weighted_0.3",
+            "weighted_0.5",
+            "weighted_0.7",
+        ],
+    )
     parser.add_argument("--n_episodes", type=int, default=10)
-    parser.add_argument("--sweep_layers", action="store_true", help="Sweep across layers")
-    parser.add_argument("--sweep_combines", action="store_true", help="Sweep across combine functions")
+    parser.add_argument(
+        "--sweep_layers", action="store_true", help="Sweep across layers"
+    )
+    parser.add_argument(
+        "--sweep_combines", action="store_true", help="Sweep across combine functions"
+    )
     parser.add_argument("--model", type=str, default="Qwen/Qwen2.5-3B-Instruct")
     parser.add_argument("--device", type=str, default="mps")
     parser.add_argument("--output", type=str, default="results")

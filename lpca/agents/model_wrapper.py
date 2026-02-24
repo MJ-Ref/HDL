@@ -8,15 +8,15 @@ Provides white-box access to model internals for:
 """
 
 import time
-from dataclasses import dataclass, field
-from typing import Any, Callable, Dict, List, Optional, Tuple
+from dataclasses import dataclass
+from typing import Any, Callable, Dict, List, Optional, Tuple, Union
 import torch
-import torch.nn.functional as F
 
 
 @dataclass
 class ActivationHook:
     """Hook for capturing or modifying activations."""
+
     layer_idx: int
     capture: bool = True
     inject: bool = False
@@ -136,6 +136,7 @@ class ModelWrapper:
                         return combined
 
                     return output
+
                 return hook_fn
 
             handle = layers[layer_idx].register_forward_hook(make_hook_fn(hook))
@@ -147,7 +148,7 @@ class ModelWrapper:
         max_new_tokens: int = 512,
         temperature: float = 0.7,
         do_sample: bool = True,
-        **kwargs
+        **kwargs,
     ) -> Tuple[str, Dict[str, Any]]:
         """
         Generate text response.
@@ -162,7 +163,7 @@ class ModelWrapper:
             prompt,
             return_tensors="pt",
             truncation=True,
-            max_length=self.model.config.max_position_embeddings - max_new_tokens
+            max_length=self.model.config.max_position_embeddings - max_new_tokens,
         )
         inputs = {k: v.to(self.model.device) for k, v in inputs.items()}
         input_length = inputs["input_ids"].shape[1]
@@ -180,14 +181,13 @@ class ModelWrapper:
                     temperature=temperature,
                     do_sample=do_sample,
                     pad_token_id=self.tokenizer.eos_token_id,
-                    **kwargs
+                    **kwargs,
                 )
 
             # Decode
             generated_ids = outputs[0][input_length:]
             generated_text = self.tokenizer.decode(
-                generated_ids,
-                skip_special_tokens=True
+                generated_ids, skip_special_tokens=True
             )
 
         finally:
@@ -243,7 +243,9 @@ class ModelWrapper:
             self._active_handles = []
 
         metadata = {
-            "hidden_states": outputs.hidden_states if hasattr(outputs, "hidden_states") else None,
+            "hidden_states": outputs.hidden_states
+            if hasattr(outputs, "hidden_states")
+            else None,
             "captured_activations": {
                 idx: hook.captured_value
                 for idx, hook in self._hooks.items()
@@ -292,8 +294,14 @@ class ModelWrapper:
         layer_idx: int,
         injection: torch.Tensor,
         combine_fn: Optional[Callable] = None,
-    ) -> torch.Tensor:
-        """Run forward with activation injection at specific layer."""
+        attention_mask: Optional[torch.Tensor] = None,
+        return_past_key_values: bool = False,
+    ) -> Union[torch.Tensor, Tuple[torch.Tensor, Any]]:
+        """Run forward with activation injection at specific layer.
+
+        If `return_past_key_values` is True, returns `(logits, past_key_values)`
+        so callers can continue generation while preserving injected context.
+        """
         hook = ActivationHook(
             layer_idx=layer_idx,
             capture=False,
@@ -304,7 +312,15 @@ class ModelWrapper:
         self.register_hook(hook)
 
         try:
-            logits, _ = self.forward(input_ids)
+            with torch.no_grad():
+                outputs = self.model(
+                    input_ids=input_ids,
+                    attention_mask=attention_mask,
+                    use_cache=return_past_key_values,
+                )
+            logits = outputs.logits
+            if return_past_key_values:
+                return logits, outputs.past_key_values
             return logits
         finally:
             self.clear_hooks()
@@ -328,6 +344,8 @@ def combine_average(receiver: torch.Tensor, sender: torch.Tensor) -> torch.Tenso
 
 def combine_weighted(alpha: float = 0.5):
     """Create weighted combination function."""
+
     def combine(receiver: torch.Tensor, sender: torch.Tensor) -> torch.Tensor:
         return (1 - alpha) * receiver + alpha * sender
+
     return combine

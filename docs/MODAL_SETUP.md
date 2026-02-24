@@ -15,7 +15,7 @@ This guide covers setting up Modal.com for M2 codec training experiments.
 ### 1. Install Modal
 
 ```bash
-pip install modal
+pip install "modal>=1.1.0"
 ```
 
 ### 2. Create Account & Authenticate
@@ -56,9 +56,9 @@ modal run --help
 ```
 HDL/
 ├── modal/
-│   ├── train_codec.py      # Main training script
-│   ├── collect_data.py     # P1 episode collection
-│   └── evaluate.py         # Evaluation sweeps
+│   ├── train_m2_codec.py   # Main M2-SCALE training/eval script
+│   ├── upload_data.py      # Upload dataset to Modal volume
+│   └── train_codec.py      # Deprecated (kept for history)
 └── ...
 ```
 
@@ -99,24 +99,42 @@ def main():
     train_codec.remote(k_vectors=16, epochs=10)
 ```
 
+## Migration Guide 2025.06 Notes
+
+LPCA now assumes Modal's 2025.06+ image behavior:
+
+1. Modal client dependencies are no longer installed into base image layers.
+2. Dependencies installed in your image recipe take precedence over Modal runtime fallbacks.
+3. For external base images (`from_registry` / `from_dockerfile`), Modal no longer forces `pip/uv/wheel` upgrades.
+
+What this means for this repo:
+
+- Current scripts use `modal.Image.debian_slim(...).pip_install(...)`, so no action is needed for base-image dependency conflicts.
+- If you switch to external images later, explicitly ensure your recipe has compatible packaging tooling (`pip` and optionally `uv`) and any required Python runtime.
+- If you start using `modal.Sandbox.create`, explicitly pass a long-lived command (for example `sleep 48h`) when needed, since newer images use the image `CMD` by default.
+
 ## Running Experiments
 
 ### Development (local)
 ```bash
-# Test locally first (uses CPU)
-modal run modal/train_codec.py --local
+# Local prototyping (MPS/CPU/GPU)
+python modal/train_m2_codec.py --local --k 4 --epochs 2
 ```
 
 ### Production (GPU)
 ```bash
-# Run on A100
-modal run modal/train_codec.py
+# Run M2-SCALE on A100
+modal run modal/train_m2_codec.py --k 4 --epochs 10
 ```
 
 ### Sweep
 ```bash
-# Run multiple k values in parallel
-modal run modal/train_codec.py --k-values 4 8 16 32
+# Run multiple k values
+python modal/train_m2_codec.py --sweep --local
+# or on Modal (run each k explicitly)
+modal run modal/train_m2_codec.py --k 4 --epochs 10
+modal run modal/train_m2_codec.py --k 8 --epochs 10
+modal run modal/train_m2_codec.py --k 16 --epochs 10
 ```
 
 ## Monitoring
