@@ -19,16 +19,17 @@ This is the execution track for the ambitious program, without date gating.
 
 1. `prepare`: validate config + seed registry, write run metadata.
 2. `run`: execute experiment commands for selected models and experiments.
-3. `aggregate`: update artifact index and collect summary artifacts.
-4. `render`: build run summary markdown.
-5. `publish`: write manifest JSON/markdown and final pointers.
+3. `aggregate`: update artifact index and build preregistered-stats-only suite report.
+4. `gate`: generate CI-backed M2 gate report (`Normal > P0`, `Shuffle < P0`).
+5. `render`: build run summary markdown.
+6. `publish`: write manifest JSON/markdown and final pointers.
 
 ## Command
 
 ```bash
 python scripts/run_full_suite.py \
   --config configs/full_suite_frozen.yaml \
-  --stages prepare,run,aggregate,render,publish
+  --stages prepare,run,aggregate,gate,render,publish
 ```
 
 Use `--execute` to run real commands. Without it, the runner is dry-run by default.

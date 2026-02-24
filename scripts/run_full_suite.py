@@ -226,7 +226,7 @@ def main() -> None:
     parser.add_argument(
         "--stages",
         type=str,
-        default="prepare,run,aggregate,render,publish",
+        default="prepare,run,aggregate,gate,render,publish",
         help="Comma-separated stages to run",
     )
     parser.add_argument(
@@ -386,6 +386,9 @@ def main() -> None:
         manifest["stages_completed"].append("run")
 
     if "aggregate" in stages:
+        # Persist intermediate manifest for downstream analysis scripts.
+        (run_dir / "manifest.json").write_text(json.dumps(manifest, indent=2))
+
         agg_log = run_dir / "logs" / "aggregate_artifact_index.log"
         agg_cmd = ["python", "scripts/analysis/generate_artifact_index.py"]
         agg_result = run_command(agg_cmd, repo_root, agg_log, args.execute)
@@ -401,7 +404,66 @@ def main() -> None:
                 "artifacts": [str((repo_root / "docs/ARTIFACT_INDEX.md").resolve())],
             }
         )
+
+        suite_log = run_dir / "logs" / "aggregate_suite_report.log"
+        suite_cmd = [
+            "python",
+            "scripts/analysis/generate_suite_report.py",
+            "--manifest",
+            str(run_dir / "manifest.json"),
+            "--output-json",
+            str(run_dir / "suite_report.json"),
+            "--output-md",
+            str(run_dir / "suite_report.md"),
+        ]
+        suite_result = run_command(suite_cmd, repo_root, suite_log, args.execute)
+        manifest["commands"].append(
+            {
+                "model": "global",
+                "experiment": "aggregate_suite_report",
+                "command": suite_cmd,
+                "log_path": str(suite_log.relative_to(run_dir)),
+                "status": suite_result["status"],
+                "returncode": suite_result["returncode"],
+                "elapsed_s": suite_result["elapsed_s"],
+                "artifacts": [
+                    str((run_dir / "suite_report.json").resolve()),
+                    str((run_dir / "suite_report.md").resolve()),
+                ],
+            }
+        )
         manifest["stages_completed"].append("aggregate")
+
+    if "gate" in stages:
+        (run_dir / "manifest.json").write_text(json.dumps(manifest, indent=2))
+        gate_log = run_dir / "logs" / "gate_m2_report.log"
+        gate_cmd = [
+            "python",
+            "scripts/analysis/generate_m2_gate_report.py",
+            "--manifest",
+            str(run_dir / "manifest.json"),
+            "--output-json",
+            str(run_dir / "m2_gate_report.json"),
+            "--output-md",
+            str(run_dir / "m2_gate_report.md"),
+        ]
+        gate_result = run_command(gate_cmd, repo_root, gate_log, args.execute)
+        manifest["commands"].append(
+            {
+                "model": "global",
+                "experiment": "gate_m2_report",
+                "command": gate_cmd,
+                "log_path": str(gate_log.relative_to(run_dir)),
+                "status": gate_result["status"],
+                "returncode": gate_result["returncode"],
+                "elapsed_s": gate_result["elapsed_s"],
+                "artifacts": [
+                    str((run_dir / "m2_gate_report.json").resolve()),
+                    str((run_dir / "m2_gate_report.md").resolve()),
+                ],
+            }
+        )
+        manifest["stages_completed"].append("gate")
 
     if "render" in stages:
         render_summary_markdown(manifest, run_dir)
