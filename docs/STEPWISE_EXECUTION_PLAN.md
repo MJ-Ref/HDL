@@ -9,11 +9,11 @@ This is the execution track for the ambitious program, without date gating.
 - [x] Add fail-fast behavior to analysis scripts (no demo fallback).
 - [x] Add artifact index generation mapped to concrete files.
 - [ ] Add model-matrix execution mode for 3 backbones with paired seeds.
-- [ ] Add preregistered-stats-only aggregate report generation.
+- [x] Add preregistered-stats-only aggregate report generation.
 - [ ] Add M2v2 architecture path (VQ bottleneck + anti-shuffle + MI + curriculum).
-- [ ] Add gate-report generator with CI-backed pass/fail policy.
-- [ ] Add reproducibility package builder (lockfile, runbook, main-table reproducer).
-- [ ] Add paper-pack generator that emits tables/figures directly from manifests.
+- [x] Add gate-report generator with CI-backed pass/fail policy.
+- [x] Add reproducibility package builder (lockfile, runbook, main-table reproducer).
+- [x] Add paper-pack generator that emits tables/figures directly from manifests.
 
 ## Run Order
 
@@ -21,15 +21,17 @@ This is the execution track for the ambitious program, without date gating.
 2. `run`: execute experiment commands for selected models and experiments.
 3. `aggregate`: update artifact index and build preregistered-stats-only suite report.
 4. `gate`: generate CI-backed M2 gate report (`Normal > P0`, `Shuffle < P0`).
-5. `render`: build run summary markdown.
-6. `publish`: write manifest JSON/markdown and final pointers.
+5. `paper`: emit manuscript-facing tables and figure-ready JSON from run manifests.
+6. `package`: assemble reproducibility bundle (runbook, lockfile, reproducer script).
+7. `render`: build run summary markdown.
+8. `publish`: write manifest JSON/markdown and final pointers.
 
 ## Command
 
 ```bash
 python scripts/run_full_suite.py \
   --config configs/full_suite_frozen.yaml \
-  --stages prepare,run,aggregate,gate,render,publish
+  --stages prepare,run,aggregate,gate,paper,package,render,publish
 ```
 
 Use `--execute` to run real commands. Without it, the runner is dry-run by default.

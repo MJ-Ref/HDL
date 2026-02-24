@@ -226,7 +226,7 @@ def main() -> None:
     parser.add_argument(
         "--stages",
         type=str,
-        default="prepare,run,aggregate,gate,render,publish",
+        default="prepare,run,aggregate,gate,paper,package,render,publish",
         help="Comma-separated stages to run",
     )
     parser.add_argument(
@@ -464,6 +464,83 @@ def main() -> None:
             }
         )
         manifest["stages_completed"].append("gate")
+
+    if "paper" in stages:
+        (run_dir / "manifest.json").write_text(json.dumps(manifest, indent=2))
+        paper_log = run_dir / "logs" / "paper_pack.log"
+        paper_cmd = [
+            "python",
+            "scripts/analysis/generate_paper_pack.py",
+            "--manifest",
+            str(run_dir / "manifest.json"),
+            "--suite-report",
+            str(run_dir / "suite_report.json"),
+            "--gate-report",
+            str(run_dir / "m2_gate_report.json"),
+            "--output-dir",
+            str(run_dir / "paper_pack"),
+        ]
+        paper_result = run_command(paper_cmd, repo_root, paper_log, args.execute)
+        manifest["commands"].append(
+            {
+                "model": "global",
+                "experiment": "paper_pack",
+                "command": paper_cmd,
+                "log_path": str(paper_log.relative_to(run_dir)),
+                "status": paper_result["status"],
+                "returncode": paper_result["returncode"],
+                "elapsed_s": paper_result["elapsed_s"],
+                "artifacts": [
+                    str((run_dir / "paper_pack" / "main_table.csv").resolve()),
+                    str((run_dir / "paper_pack" / "main_table.md").resolve()),
+                    str((run_dir / "paper_pack" / "m2_gate_table.md").resolve()),
+                    str((run_dir / "paper_pack" / "figure_data.json").resolve()),
+                    str(
+                        (run_dir / "paper_pack" / "paper_pack_manifest.json").resolve()
+                    ),
+                ],
+            }
+        )
+        manifest["stages_completed"].append("paper")
+
+    if "package" in stages:
+        (run_dir / "manifest.json").write_text(json.dumps(manifest, indent=2))
+        package_log = run_dir / "logs" / "package_repro_bundle.log"
+        package_cmd = [
+            "python",
+            "scripts/analysis/build_repro_package.py",
+            "--manifest",
+            str(run_dir / "manifest.json"),
+            "--output-dir",
+            str(run_dir / "repro_package"),
+        ]
+        package_result = run_command(package_cmd, repo_root, package_log, args.execute)
+        manifest["commands"].append(
+            {
+                "model": "global",
+                "experiment": "package_repro_bundle",
+                "command": package_cmd,
+                "log_path": str(package_log.relative_to(run_dir)),
+                "status": package_result["status"],
+                "returncode": package_result["returncode"],
+                "elapsed_s": package_result["elapsed_s"],
+                "artifacts": [
+                    str((run_dir / "repro_package" / "RUNBOOK.md").resolve()),
+                    str((run_dir / "repro_package" / "environment_lock.txt").resolve()),
+                    str(
+                        (
+                            run_dir / "repro_package" / "reproduce_main_table.sh"
+                        ).resolve()
+                    ),
+                    str(
+                        (
+                            run_dir / "repro_package" / "repro_package_manifest.json"
+                        ).resolve()
+                    ),
+                ],
+            }
+        )
+        manifest["stages_completed"].append("package")
 
     if "render" in stages:
         render_summary_markdown(manifest, run_dir)
