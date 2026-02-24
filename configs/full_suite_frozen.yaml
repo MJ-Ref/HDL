@@ -28,8 +28,8 @@ m2:
 models:
   - name: qwen_3b
     model_id: Qwen/Qwen2.5-3B-Instruct
-  - name: phi3_mini
-    model_id: microsoft/Phi-3-mini-4k-instruct
+  - name: qwen_7b
+    model_id: Qwen/Qwen2.5-7B-Instruct
   - name: mistral_7b
     model_id: mistralai/Mistral-7B-Instruct-v0.3
 
