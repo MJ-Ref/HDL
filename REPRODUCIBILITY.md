@@ -82,7 +82,23 @@ python scripts/run_full_suite.py \
   --stop-on-error
 ```
 
-### 4.4 Resume an interrupted run
+### 4.4 Cloud E1-E4 matrix execution (Modal)
+
+```bash
+python scripts/run_full_suite.py \
+  --config configs/full_suite_modal_e1e4.yaml \
+  --run-id run_e1e4_modal_matrix \
+  --models qwen_3b,qwen_7b,mistral_7b \
+  --experiments E1,E2,E3,E4 \
+  --stages prepare,run,aggregate,render,publish \
+  --execute \
+  --stop-on-error
+```
+
+This route runs E1-E4 through `modal/run_baseline_experiment.py`, which writes local
+artifact JSON files after remote execution on Modal GPUs.
+
+### 4.5 Resume an interrupted run
 
 ```bash
 python scripts/run_full_suite.py \

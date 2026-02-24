@@ -73,6 +73,16 @@ Notes:
 ### Useful scoped runs
 
 ```bash
+# Cloud E1-E4 matrix on Modal (avoids local GPU/CPU load)
+python scripts/run_full_suite.py \
+  --config configs/full_suite_modal_e1e4.yaml \
+  --run-id run_e1e4_modal_matrix \
+  --models qwen_3b,qwen_7b,mistral_7b \
+  --experiments E1,E2,E3,E4 \
+  --stages prepare,run,aggregate,render,publish \
+  --execute \
+  --stop-on-error
+
 # Only M2 across the frozen model set
 python scripts/run_full_suite.py \
   --run-id run_m2_only \

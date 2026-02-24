@@ -1,0 +1,134 @@
+version: 1
+suite_name: lpca_full_suite_modal_e1e4
+seed_registry_path: configs/seeds/full_suite_seed_registry.json
+output_root: outputs/full_suite
+default_device: cuda
+
+seed_usage:
+  primary_set: key_comparisons
+  matrix_sets:
+    - key_comparisons
+
+matrix_requirements:
+  min_models: 3
+  min_seed_count: 100
+
+episodes:
+  e1: 100
+  e2: 100
+  e3: 100
+  e4: 100
+  m2_eval: 100
+
+m2:
+  k: 16
+  epochs: 10
+  data_path: data/m2_train.jsonl
+
+models:
+  - name: qwen_3b
+    model_id: Qwen/Qwen2.5-3B-Instruct
+  - name: qwen_7b
+    model_id: Qwen/Qwen2.5-7B-Instruct
+  - name: mistral_7b
+    model_id: mistralai/Mistral-7B-Instruct-v0.3
+
+experiments:
+  E1:
+    enabled: true
+    command:
+      - python
+      - modal/run_baseline_experiment.py
+      - --experiment
+      - E1
+      - --protocols
+      - P0,P1
+      - --n-episodes
+      - "{e1_episodes}"
+      - --base-seed
+      - "{primary_base_seed}"
+      - --model
+      - "{model_id}"
+      - --output
+      - "{output_dir}/summary.json"
+    artifact_glob: "{output_dir}/summary.json"
+
+  E2:
+    enabled: true
+    command:
+      - python
+      - modal/run_baseline_experiment.py
+      - --experiment
+      - E2
+      - --protocols
+      - P2,P5
+      - --n-episodes
+      - "{e2_episodes}"
+      - --base-seed
+      - "{primary_base_seed}"
+      - --model
+      - "{model_id}"
+      - --output
+      - "{output_dir}/results.json"
+    artifact_glob: "{output_dir}/results.json"
+
+  E3:
+    enabled: true
+    command:
+      - python
+      - modal/run_baseline_experiment.py
+      - --experiment
+      - E3
+      - --n-episodes
+      - "{e3_episodes}"
+      - --base-seed
+      - "{primary_base_seed}"
+      - --model
+      - "{model_id}"
+      - --output
+      - "{output_dir}/summary.json"
+    artifact_glob: "{output_dir}/summary.json"
+
+  E4:
+    enabled: true
+    command:
+      - python
+      - modal/run_baseline_experiment.py
+      - --experiment
+      - E4
+      - --layer
+      - "18"
+      - --combine
+      - replace
+      - --n-episodes
+      - "{e4_episodes}"
+      - --base-seed
+      - "{primary_base_seed}"
+      - --model
+      - "{model_id}"
+      - --output
+      - "{output_dir}/summary.json"
+    artifact_glob: "{output_dir}/summary.json"
+
+  M2:
+    enabled: false
+    command:
+      - python
+      - modal/train_m2_codec.py
+      - --codec-variant
+      - m2v2
+      - --k
+      - "{m2_k}"
+      - --epochs
+      - "{m2_epochs}"
+      - --data
+      - "{m2_data_path}"
+      - --model
+      - "{model_id}"
+      - --base-seed
+      - "{primary_base_seed}"
+      - --eval-episodes
+      - "{m2_eval_episodes}"
+      - --output
+      - "{output_dir}/m2_eval.json"
+    artifact_glob: "{output_dir}/m2_eval.json"
